@@ -1,15 +1,18 @@
+#include <stddef.h>
+#include <stdint.h>
 
-#define MMIO16(addr) (*((volatile unsigned int*)(addr)))
-#define MMIO32(addr) (*((volatile unsigned long*)(addr)))
-#define MMIO8(addr) (*((volatile unsigned char*)(addr)))
+#define MMIO16(addr) (*((volatile uint16_t*)(addr)))
+#define MMIO32(addr) (*((volatile uint32_t*)(addr)))
+#define MMIO8(addr) (*((volatile uint8_t*)(addr)))
 
 #define DEBUG_REG MMIO16(0xFF5004)
 #define DEBUG_REG_SW_RESET (1 << 7)
 
 #define CLK_PER10_DIV_REG		MMIO16(0xFF400E)
-#define CLK_PER10_DIV_REG_QSPI_MASK	(3 << 8)
-#define CLK_PER10_DIV_REG_QSPI		(1 << 8)
-#define CLK_PER10_DIV_REG_QSPI2		(1 << 10)
+#define CLK_PER10_DIV_REG_QSPI_DIV_MASK	(3 << 8)
+#define CLK_PER10_DIV_REG_QSPI_DIV_1	(1 << 8)
+#define CLK_PER10_DIV_REG_QSPI_DIV_2	(2 << 8)
+#define CLK_PER10_DIV_REG_QSPI_EN	(1 << 10)
 
 #define CLK_AMBA_REG			MMIO16(0xFF4000)
 #define CLK_AMBA_REG_HCLK_DIV_MASK	(7 << 0)
@@ -117,17 +120,21 @@
 //#define QSPIC_CTRL_REG32		MMIO32(0xFF0C00)
 #define QSPIC_CTRL_REG_DISABLE_BUS	(1 << 4)
 #define QSPIC_CTRL_REG_ENABLE_BUS	(1 << 3)
-#define QSPIC_CTRL_REG_QPI_EN		(1 << 2)
+#define QSPIC_CTRL_REG_QIO_EN		(1 << 2)
 #define QSPIC_CTRL_REG_DIO_EN		(1 << 1)
 #define QSPIC_CTRL_REG_SIO_EN		(1 << 0)
 #define QSPIC_CFG_REG			MMIO16(0xFF0C04)
 #define QSPIC_CFG_REG_MODE_MASK		(3 << 2)
 #define QSPIC_CFG_REG_MODE_3		(1 << 7)
+#define QSPIC_RECVDATA_REG		MMIO32(0xFF0C08)
 #define QSPIC_STATUS_REG		MMIO16(0xFF0C14)
 #define QSPIC_STATUS_REG_BUSY		(1 << 0)
 #define QSPIC_WRITEDATA8_REG		MMIO8(0xFF0C18)
 #define QSPIC_WRITEDATA16_REG		MMIO16(0xFF0C18)
 #define QSPIC_WRITEDATA32_REG		MMIO32(0xFF0C18)
+#define QSPIC_READDATA8_REG		MMIO8(0xFF0C1C)
+#define QSPIC_READDATA16_REG		MMIO16(0xFF0C1C)
+#define QSPIC_READDATA32_REG		MMIO32(0xFF0C1C)
 #define QSPIC_UNKNOWN_REG1		MMIO16(0xFF4814)
 #define QSPIC_UNKNOWN_REG2		MMIO16(0xFF481C)
 #define QSPIC_UNKNOWN_REG3		MMIO16(0xFF4816)
@@ -317,6 +324,129 @@ static const port_pin_t pin_blacklist[] = {
 */
 };
 
+typedef enum {
+	QSPI_MODE_SIO,
+	QSPI_MODE_DIO,
+	QSPI_MODE_QIO
+} qspi_mode_t;
+
+typedef struct qspi_xfer_desc {
+	qspi_mode_t mode;
+	const void *tx_data;
+	size_t tx_len;
+	size_t dummy_cycles_after_tx;
+	void *rx_data;
+	size_t rx_len;
+} qspi_xfer_desc_t;
+
+static void qspi_tx(const qspi_xfer_desc_t *desc) {
+	const uint8_t *data = desc->tx_data;
+	size_t data_len = desc->tx_len;
+	size_t dummy_len = desc->dummy_cycles_after_tx;
+	switch (desc->mode) {
+	case QSPI_MODE_DIO:
+		dummy_len *= 2;
+		break;
+	case QSPI_MODE_QIO:
+		dummy_len *= 4;
+		break;
+	default:
+		break;
+	}
+
+	while (data_len || dummy_len) {
+		size_t combined_len = data_len + dummy_len;
+
+		if (combined_len >= 4) {
+			uint32_t datum = 0xffffffff;
+			int i;
+			for (i = 0; i < 4 && data_len; i++) {
+				datum &= ~(((uint32_t)*data++) << (i * 8));
+				data_len--;
+			}
+			dummy_len -= 4 - i;
+			QSPIC_WAIT_NOT_BUSY();
+			QSPIC_WRITEDATA32_REG = datum;
+		} else if (combined_len >= 2) {
+			uint16_t datum = 0xffff;
+			int i;
+			for (i = 0; i < 2 && data_len; i++) {
+				datum &= ~(((uint16_t)*data++) << (i * 8));
+				data_len--;
+			}
+			dummy_len -= 2 - i;
+			QSPIC_WAIT_NOT_BUSY();
+			QSPIC_WRITEDATA16_REG = datum;
+		} else {
+			QSPIC_WAIT_NOT_BUSY();
+			if (data_len) {
+				QSPIC_WRITEDATA8_REG = *data++;
+			} else {
+				QSPIC_WRITEDATA8_REG = 0xff;
+			}
+		}
+	}
+	QSPIC_WAIT_NOT_BUSY();
+}
+
+static void qspi_rx(const qspi_xfer_desc_t *desc) {
+	uint8_t *data = desc->rx_data;
+	size_t data_len = desc->rx_len;
+
+	while (data_len >= 4) {
+		QSPIC_READDATA32_REG;
+		QSPIC_WAIT_NOT_BUSY();
+		uint32_t datum = QSPIC_RECVDATA_REG;
+		data[0] = (uint8_t)datum;
+		data[1] = (uint8_t)(datum >> 8);
+		data[2] = (uint8_t)(datum >> 16);
+		data[3] = (uint8_t)(datum >> 24);
+		data += 4;
+		data_len -= 4;
+	}
+
+	while (data_len >= 2) {
+		QSPIC_READDATA16_REG;
+		QSPIC_WAIT_NOT_BUSY();
+		uint32_t datum = QSPIC_RECVDATA_REG;
+		data[0] = (uint8_t)datum;
+		data[1] = (uint8_t)(datum >> 8);
+		data += 2;
+		data_len -= 2;
+	}
+
+	while (data_len) {
+		QSPIC_READDATA16_REG;
+		QSPIC_WAIT_NOT_BUSY();
+		uint32_t datum = QSPIC_RECVDATA_REG;
+		*data++ = (uint8_t)datum;
+		data_len--;
+	}
+}
+
+static void qspi_write_then_read(const qspi_xfer_desc_t *desc) {
+	switch (desc->mode) {
+	case QSPI_MODE_SIO:
+		QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_SIO_EN;
+		break;
+	case QSPI_MODE_DIO:
+		QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DIO_EN;
+		break;
+	case QSPI_MODE_QIO:
+		QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QIO_EN;
+		break;
+	}
+
+	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_ENABLE_BUS;
+	if ((desc->tx_data && desc->tx_len) || desc->dummy_cycles_after_tx) {
+		qspi_tx(desc);
+	}
+	if (desc->rx_data && desc->rx_len) {
+		qspi_rx(desc);
+	}
+	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS;
+}
+
 static void qspic_deassert_reassert_cs(void) {
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS;
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_ENABLE_BUS;
@@ -336,21 +466,32 @@ int main(void) {
 //	P0_DATA_REG &= ~0x02;
 
 	// QSPI clock config
-	CLK_PER10_DIV_REG &= ~CLK_PER10_DIV_REG_QSPI_MASK;
-	CLK_PER10_DIV_REG |= CLK_PER10_DIV_REG_QSPI;
+	/* This could also be a clock source selector instead of a divider
+	   Selecting DIV2 does result in half the frequency on QSPI clk though */
+	CLK_PER10_DIV_REG &= ~CLK_PER10_DIV_REG_QSPI_DIV_MASK;
+	CLK_PER10_DIV_REG |= CLK_PER10_DIV_REG_QSPI_DIV_1;
 	CLK_AMBA_REG &= ~CLK_AMBA_REG_HCLK_DIV_MASK;
 	CLK_AMBA_REG &= ~CLK_AMBA_REG_PCLK_DIV_MASK;
 	CLK_AMBA_REG |= CLK_AMBA_REG_HCLK_DIV_2;
-	CLK_AMBA_REG |= CLK_AMBA_REG_SRAM1_EN;
+	/* SRAM enable does not seem to relate to QSPI, skipping it does not have any effect */
+//	CLK_AMBA_REG |= CLK_AMBA_REG_SRAM1_EN;
 	CLK_AMBA_REG |= CLK_AMBA_REG_PCLK_DIV_1;
-	CLK_PER10_DIV_REG |= CLK_PER10_DIV_REG_QSPI2;
+	/* Not sure what this does, removing it does not seem to have any effect */
+	CLK_PER10_DIV_REG |= CLK_PER10_DIV_REG_QSPI_EN;
 
 	// QSPI enable
 	QSPIC_DEASSERT_CS();
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_SIO_EN;
-	QSPIC_CFG_REG = 0x2e;
-	QSPIC_UNKNOWN_REG1 |= (1 << 15);
-	QSPIC_UNKNOWN_REG2 = 0x105;
+
+	/* While set in the bootrom those three do not seem to be strictly required */
+//	QSPIC_CFG_REG = 0x2e;
+//	QSPIC_UNKNOWN_REG1 |= (1 << 15);
+//	QSPIC_UNKNOWN_REG2 = 0x105;
+
+	/* Even unsetting the bits from above explicitly does not seem to have any effect ... */
+//	QSPIC_CFG_REG &= ~0x2e;
+//	QSPIC_UNKNOWN_REG1 &= ~(1 << 15);
+//	QSPIC_UNKNOWN_REG2 &= ~0x105;
 
 	for (volatile unsigned int i = 0; i < 314; i++);
 	for (volatile unsigned int i = 0; i < 480; i++) {
@@ -359,7 +500,8 @@ int main(void) {
 		}
 	}
 
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QPI_EN;
+/*
+	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QIO_EN;
 	QSPIC_WRITEDATA8_REG = 0xff;
 	QSPIC_WAIT_NOT_BUSY();
 
@@ -375,19 +517,35 @@ int main(void) {
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS;
 //	qspic_deassert_reassert_cs();
 //	QSPIC_WRITEDATA8_REG = 0xaa;
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QPI_EN;
+	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QIO_EN;
 	QSPIC_WRITEDATA16_REG = 0xaa55;
 	QSPIC_WAIT_NOT_BUSY();
 
 	qspic_deassert_reassert_cs();
 
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QPI_EN;
+	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QIO_EN;
 	QSPIC_CFG_REG &= ~QSPIC_CFG_REG_MODE_MASK;
 	QSPIC_CFG_REG |= QSPIC_CFG_REG_MODE_3;
 	QSPIC_WRITEDATA16_REG = 0xaa55;
 	QSPIC_WAIT_NOT_BUSY();
 
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS;
+*/
+	uint8_t tx_data[256];
+	for (int i = 0; i < 256; i++) {
+		tx_data[i] = i;
+	}
+	uint8_t rx_data[256];
+	qspi_xfer_desc_t desc = {
+		.mode = QSPI_MODE_QIO,
+		.tx_data = tx_data,
+		.tx_len = sizeof(tx_data),
+		.dummy_cycles_after_tx = 256,
+		.rx_data = rx_data,
+		.rx_len = sizeof(rx_data)
+	};
+
+	qspi_write_then_read(&desc);
 /*
 	unsigned int aux_clk_config = CLK_AUX2_REG;
 	dump_reg16("CLK_AUX2_REG", CLK_AUX2_REG);
@@ -410,7 +568,7 @@ int main(void) {
 
 //	QSPIC_WRITEDATA32_REG = 0xaaaaaaaa;
 
-	uart_puts("Bootrom:\r\n");
+	uart_puts("Bootrom2:\r\n");
 	uart_hexdump((void *)0xFEF000, 0x800);
 	uart_puts("\r\nBootrom dump complete\r\n");
 /*
