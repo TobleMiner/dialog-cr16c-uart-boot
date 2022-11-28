@@ -2,3 +2,5 @@
 test
 *.bak
 *.bin
+*.elf
+bootrom
