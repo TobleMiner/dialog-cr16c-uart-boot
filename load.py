@@ -31,17 +31,24 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	hdr = struct.pack("<BH", SOH, len(payload))
 	ser.write(hdr)
 
-	byts = ser.read(1)
-	if len(byts) < 1:
-		print("Timed out waiting for response to header")
-		sys.exit(1)
-	byt = byts[0]
-	if byt == NACK:
-		print("Bootloader refused our payload")
-		sys.exit(1)
-	if byt != ACK:
-		print(f"Unexpected reponse 0x{byt:02x} from bootloader")
-		sys.exit(1)
+	stxcnt = 0
+	while True:
+		byts = ser.read(1)
+		if stxcnt > 1 or len(byts) < 1:
+			print("Timed out waiting for response to header")
+			sys.exit(1)
+		byt = byts[0]
+		if byt == STX:
+			stxcnt += 1
+			continue
+		if byt == ACK:
+			break
+		if byt == NACK:
+			print("Bootloader refused our payload")
+			sys.exit(1)
+		else:
+			print(f"Unexpected response 0x{byt:02x} from bootloader")
+			sys.exit(1)
 
 	print("Payload size accepted, sending data")
 	ser.write(payload)
@@ -60,3 +67,9 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	else:
 		print("Response checksum incorrect, aborting")
 		sys.exit(1)
+
+	ser.timeout = 0.1
+	while True:
+		byts = ser.read(32)
+		if len(byts):
+			print(''.join(chr(b) for b in byts), end='')
