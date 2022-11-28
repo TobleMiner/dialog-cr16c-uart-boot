@@ -124,8 +124,12 @@
 #define QSPIC_CTRL_REG_DIO_EN		(1 << 1)
 #define QSPIC_CTRL_REG_SIO_EN		(1 << 0)
 #define QSPIC_CFG_REG			MMIO16(0xFF0C04)
-#define QSPIC_CFG_REG_MODE_MASK		(3 << 2)
-#define QSPIC_CFG_REG_MODE_3		(1 << 7)
+#define QSPIC_CFG_REG_IO3_RST_DATA	(1 << 5)
+#define QSPIC_CFG_REG_IO2_WP_DATA	(1 << 4)
+#define QSPIC_CFG_REG_IO3_RST_OEN	(1 << 3)
+#define QSPIC_CFG_REG_IO2_WP_OEN	(1 << 2)
+#define QSPIC_CFG_REG_DO_CLK_IDLE_LEVEL	(1 << 1)
+#define QSPIC_CFG_REG_OUTPUT_DISABLE	(1 << 0)
 #define QSPIC_RECVDATA_REG		MMIO32(0xFF0C08)
 #define QSPIC_STATUS_REG		MMIO16(0xFF0C14)
 #define QSPIC_STATUS_REG_BUSY		(1 << 0)
@@ -483,13 +487,19 @@ int main(void) {
 	QSPIC_DEASSERT_CS();
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_SIO_EN;
 
+	/* QSPI IO config, release reset, DO idle level high */
+	/* 0x20 = RST/IO3 high */
+	/* 0x10 = WP/IO2 high */
+	/* 0x08 = RST/IO3 output enable */
+	/* 0x04 = WP/IO2 output enable */
+	/* 0x02 = DO/IO0 and CLK idle level high */
+	/* 0x01 = output disable */
+	QSPIC_CFG_REG = QSPIC_CFG_REG_IO3_RST_DATA | QSPIC_CFG_REG_IO3_RST_OEN | QSPIC_CFG_REG_IO2_WP_OEN;
 	/* While set in the bootrom those three do not seem to be strictly required */
-//	QSPIC_CFG_REG = 0x2e;
-//	QSPIC_UNKNOWN_REG1 |= (1 << 15);
-//	QSPIC_UNKNOWN_REG2 = 0x105;
+	QSPIC_UNKNOWN_REG1 |= (1 << 15);
+	QSPIC_UNKNOWN_REG2 = 0x105;
 
 	/* Even unsetting the bits from above explicitly does not seem to have any effect ... */
-//	QSPIC_CFG_REG &= ~0x2e;
 //	QSPIC_UNKNOWN_REG1 &= ~(1 << 15);
 //	QSPIC_UNKNOWN_REG2 &= ~0x105;
 
@@ -524,8 +534,6 @@ int main(void) {
 	qspic_deassert_reassert_cs();
 
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QIO_EN;
-	QSPIC_CFG_REG &= ~QSPIC_CFG_REG_MODE_MASK;
-	QSPIC_CFG_REG |= QSPIC_CFG_REG_MODE_3;
 	QSPIC_WRITEDATA16_REG = 0xaa55;
 	QSPIC_WAIT_NOT_BUSY();
 
@@ -537,7 +545,7 @@ int main(void) {
 	}
 	uint8_t rx_data[256];
 	qspi_xfer_desc_t desc = {
-		.mode = QSPI_MODE_QIO,
+		.mode = QSPI_MODE_SIO,
 		.tx_data = tx_data,
 		.tx_len = sizeof(tx_data),
 		.dummy_cycles_after_tx = 256,
