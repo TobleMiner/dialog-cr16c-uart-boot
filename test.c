@@ -363,31 +363,41 @@ static void qspi_tx(const qspi_xfer_desc_t *desc) {
 		size_t combined_len = data_len + dummy_len;
 
 		if (combined_len >= 4) {
-			uint32_t datum = 0xffffffff;
+			uint32_t datum = 0;
 			int i;
-			for (i = 0; i < 4 && data_len; i++) {
-				datum &= ~(((uint32_t)*data++) << (i * 8));
-				data_len--;
+			for (i = 0; i < 4; i++) {
+				if (data_len) {
+					datum |= (((uint32_t)*data++) << (i * 8));
+					data_len--;
+				} else {
+					datum |= (((uint32_t)0xff) << (i * 8));
+					dummy_len--;
+				}
 			}
-			dummy_len -= 4 - i;
 			QSPIC_WAIT_NOT_BUSY();
 			QSPIC_WRITEDATA32_REG = datum;
 		} else if (combined_len >= 2) {
-			uint16_t datum = 0xffff;
+			uint16_t datum = 0;
 			int i;
-			for (i = 0; i < 2 && data_len; i++) {
-				datum &= ~(((uint16_t)*data++) << (i * 8));
-				data_len--;
+			for (i = 0; i < 2; i++) {
+				if (data_len) {
+					datum |= (((uint16_t)*data++) << (i * 8));
+					data_len--;
+				} else {
+					datum |= (((uint16_t)0xff) << (i * 8));
+					dummy_len--;
+				}
 			}
-			dummy_len -= 2 - i;
 			QSPIC_WAIT_NOT_BUSY();
 			QSPIC_WRITEDATA16_REG = datum;
 		} else {
 			QSPIC_WAIT_NOT_BUSY();
 			if (data_len) {
 				QSPIC_WRITEDATA8_REG = *data++;
+				data_len--;
 			} else {
 				QSPIC_WRITEDATA8_REG = 0xff;
+				dummy_len--;
 			}
 		}
 	}
@@ -457,6 +467,73 @@ static void qspic_deassert_reassert_cs(void) {
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_ENABLE_BUS;
 }
 
+const uint8_t sfdp_read_header_cmd[] = { 0x5A, 0x00, 0x00, 0x00 };
+
+static void qspic_read_parameter_table(uint8_t *parameter_header) {
+	uint8_t parameter_table[64];
+	unsigned int table_len = (unsigned int)parameter_header[3] * 4;
+	if (table_len > sizeof(parameter_table)) {
+		uart_puts("Parameter table > 64 byte, skipping");
+		return ;
+	}
+	unsigned int table_id = parameter_header[0];
+	uint8_t read_parameter_table_cmd[] = { 0x5A, parameter_header[6], parameter_header[5], parameter_header[4] };
+	qspi_xfer_desc_t read_param_table_desc = {
+		.mode = QSPI_MODE_SIO,
+		.tx_data = read_parameter_table_cmd,
+		.tx_len = sizeof(read_parameter_table_cmd),
+		.dummy_cycles_after_tx = 1,
+		.rx_data = parameter_table,
+		.rx_len = table_len
+	};
+	uart_puts("Parameter table: ");
+	uart_hexdump(parameter_table, table_len);
+	uart_puts("\r\n");
+}
+
+static void qspic_read_sfdp(void) {
+	uint8_t sfdp_header[8];
+	qspi_xfer_desc_t desc = {
+		.mode = QSPI_MODE_SIO,
+		.tx_data = sfdp_read_header_cmd,
+		.tx_len = sizeof(sfdp_read_header_cmd),
+		.dummy_cycles_after_tx = 1,
+		.rx_data = sfdp_header,
+		.rx_len = sizeof(sfdp_header)
+	};
+	qspi_write_then_read(&desc);
+	uart_puts("SFDP header: ");
+	uart_hexdump(sfdp_header, sizeof(sfdp_header));
+	uart_puts("\r\n");
+
+	unsigned int num_parameter_header = sfdp_header[6] + 1;
+	uart_puts("Found ");
+	uart_putint(num_parameter_header);
+	uart_puts(" parameter headers\r\n");
+
+	for (unsigned int hdr_idx = 0; hdr_idx < num_parameter_header; hdr_idx++) {
+		uint8_t parameter_header[8];
+
+		unsigned int address = sizeof(sfdp_header) + sizeof(parameter_header) * hdr_idx;
+		uint8_t read_parameter_header_cmd[] = { 0x5A, (address >> 16) & 0xff, (address >> 8) & 0xff, address & 0xff };
+		qspi_xfer_desc_t read_param_header_desc = {
+			.mode = QSPI_MODE_SIO,
+			.tx_data = read_parameter_header_cmd,
+			.tx_len = sizeof(read_parameter_header_cmd),
+			.dummy_cycles_after_tx = 1,
+			.rx_data = parameter_header,
+			.rx_len = sizeof(parameter_header)
+		};
+		qspi_write_then_read(&read_param_header_desc);
+		uart_puts("Parameter header ");
+		uart_putint(hdr_idx);
+		uart_puts(": ");
+		uart_hexdump(parameter_header, sizeof(parameter_header));
+		uart_puts("\r\n");
+		qspic_read_parameter_table(parameter_header);
+	}
+}
+
 int main(void) {
 	P0_DIR_REG |= 0x03;
 	P0_MODE_REG |= 0x01;
@@ -494,7 +571,7 @@ int main(void) {
 	/* 0x08 = RST/IO3 output enable */
 	/* 0x04 = WP/IO2 output enable */
 	/* 0x02 = DO/IO0 and CLK idle level high */
-	/* 0x01 = output disable */
+	/* 0x01 = auto mode */
 	QSPIC_CFG_REG = QSPIC_CFG_REG_IO3_RST_DATA | QSPIC_CFG_REG_IO3_RST_OEN | QSPIC_CFG_REG_IO2_WP_OEN;
 	/* While set in the bootrom those three do not seem to be strictly required */
 	QSPIC_UNKNOWN_REG1 |= (1 << 15);
@@ -540,6 +617,7 @@ int main(void) {
 
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS;
 */
+/*
 	uint8_t tx_data[256];
 	for (int i = 0; i < 256; i++) {
 		tx_data[i] = i;
@@ -555,6 +633,9 @@ int main(void) {
 	};
 
 	qspi_write_then_read(&desc);
+*/
+	WATCHDOG_REG = 0xff;
+	qspic_read_sfdp();
 /*
 	unsigned int aux_clk_config = CLK_AUX2_REG;
 	dump_reg16("CLK_AUX2_REG", CLK_AUX2_REG);
