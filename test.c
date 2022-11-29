@@ -99,25 +99,8 @@
 #define PORT_RESET_REG(port)	MMIO16(PORT_BASE(port) + 0x04)
 #define PORT_DIR_REG(port)	MMIO16(PORT_BASE(port) + 0x06)
 #define PORT_MODE_REG(port)	MMIO16(PORT_BASE(port) + 0x08)
-/*
-#define QSPIC_CTRLBUS_REG MMIO32(0xFF0E00)
-#define QSPIC_CTRLMODE_REG MMIO32(0xFF0E04)
-#define QSPIC_RECVDATA_REG MMIO32(0xFF0E08)
-#define QSPIC_BURSTCMDA_REG MMIO32(0xFF0E0C)
-#define QSPIC_BURSTCMDB_REG MMIO32(0xFF0E10)
-#define QSPIC_STATUS_REG MMIO32(0xFF0E14)
-#define QSPIC_WRITEDATA8_REG MMIO8(0xFF0E18)
-#define QSPIC_WRITEDATA16_REG MMIO16(0xFF0E18)
-#define QSPIC_WRITEDATA32_REG MMIO32(0xFF0E18)
-#define QSPIC_READDATA8_REG MMIO8(0xFF0E1C)
-#define QSPIC_READDATA16_REG MMIO16(0xFF0E1C)
-#define QSPIC_READDATA32_REG MMIO32(0xFF0E1C)
-#define QSPIC_DUMMYDATA8_REG MMIO8(0xFF0E20)
-#define QSPIC_DUMMYDATA16_REG MMIO16(0xFF0E20)
-#define QSPIC_DUMMYDATA32_REG MMIO32(0xFF0E20)
-*/
-#define QSPIC_CTRL_REG16		MMIO32(0xFF0C00)
-//#define QSPIC_CTRL_REG32		MMIO32(0xFF0C00)
+
+#define QSPIC_CTRL_REG			MMIO32(0xFF0C00)
 #define QSPIC_CTRL_REG_DISABLE_BUS	(1 << 4)
 #define QSPIC_CTRL_REG_ENABLE_BUS	(1 << 3)
 #define QSPIC_CTRL_REG_QIO_EN		(1 << 2)
@@ -144,7 +127,7 @@
 #define QSPIC_UNKNOWN_REG2		MMIO16(0xFF481C)
 #define QSPIC_UNKNOWN_REG3		MMIO16(0xFF4816)
 
-#define QSPIC_DEASSERT_CS()	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS
+#define QSPIC_DEASSERT_CS()	QSPIC_CTRL_REG = QSPIC_CTRL_REG_DISABLE_BUS
 
 #define QSPIC_WAIT_NOT_BUSY()	do { } while (QSPIC_STATUS_REG & QSPIC_STATUS_REG_BUSY)
 
@@ -220,8 +203,7 @@ typedef struct vector_table {
 	funcp_t reserved30;
 } vector_table_t;
 
-void uart_puts(const char *str);
-void uart_puts(const char *str) {
+static void uart_puts(const char *str) {
 	while (*str) {
 		UART_RX_TX_REG = *str++;
 		while (!(UART_CTRL_REG & UART_CTRL_REG_TI));
@@ -239,8 +221,7 @@ static void uart_putbyte_hex(unsigned char byt) {
 	uart_puts(str);
 }
 
-void uart_hexdump(void *ptr, unsigned int len);
-void uart_hexdump(void *ptr, unsigned int len) {
+static void uart_hexdump(void *ptr, unsigned int len) {
 	unsigned char *ptr8 = ptr;
 	while (len--) {
 		WATCHDOG_REG = 0xff;
@@ -248,8 +229,7 @@ void uart_hexdump(void *ptr, unsigned int len) {
 	}
 }
 
-void uart_putint(unsigned int val);
-void uart_putint(unsigned int val) {
+static void uart_putint(unsigned int val) {
 	char str[6];
 	str[4] = '0';
 	str[5] = 0;
@@ -265,8 +245,7 @@ void uart_putint(unsigned int val) {
 	uart_puts(ptr);
 }
 
-void uart_putlong(unsigned long val);
-void uart_putlong(unsigned long val) {
+static void uart_putlong(unsigned long val) {
 	char str[11];
 	str[9] = '0';
 	str[10] = 0;
@@ -282,21 +261,17 @@ void uart_putlong(unsigned long val) {
 	uart_puts(ptr);
 }
 
-void uart_putint_hex(unsigned int i);
-void uart_putint_hex(unsigned int i) {
+static void uart_putint_hex(unsigned int i) {
 	uart_putbyte_hex(i >> 8);
 	uart_putbyte_hex(i & 0xff);
 }
 
-void uart_putlong_hex(unsigned long i);
-void uart_putlong_hex(unsigned long i) {
-	uart_puts("longhex");
+static void uart_putlong_hex(unsigned long i) {
 	uart_putint_hex(i >> 16);
 	uart_putint_hex(i & 0xffff);
 }
 
-void uart_putnewline(void);
-void uart_putnewline(void) {
+static void uart_putnewline(void) {
 	uart_puts("\r\n");
 }
 
@@ -310,6 +285,10 @@ static void print_trap(const char *trap) {
 	uart_puts("\r\n=======TRAP=========\r\n");
 	uart_puts(trap);
 	uart_puts("\r\n=====ENDTRAP=========\r\n");
+}
+
+static void print_trap_reset(const char *trap) {
+	print_trap(trap);
 	reset();
 }
 
@@ -318,7 +297,7 @@ static void svc_trap(void) {
 }
 
 static void dvz_trap(void) {
-	print_trap("Divide by zero");
+	print_trap_reset("Divide by zero");
 }
 
 static void flg_trap(void) {
@@ -327,14 +306,19 @@ static void flg_trap(void) {
 
 static void bpt_trap(void) {
 	print_trap("Breakpoint");
+	while (1);
 }
 
 static void trc_trap(void) {
 	print_trap("Trace");
 }
 
+static void und_trap(void) {
+	print_trap_reset("Undefined instruction");
+}
+
 static void iad_trap(void) {
-	print_trap("Illegal address");
+	print_trap_reset("Illegal address");
 }
 
 static void dbg_trap(void) {
@@ -357,6 +341,7 @@ vector_table_t vector_table = {
 	.flg_trap = flg_trap,
 	.bpt_trap = bpt_trap,
 	.trc_trap = trc_trap,
+	.und_trap = und_trap,
 	.iad_trap = iad_trap,
 	.dbg_trap = dbg_trap,
 	.uart_ri_int = uart_rx_int,
@@ -591,29 +576,29 @@ static void qspi_rx(const qspi_xfer_desc_t *desc) {
 static void qspi_write_then_read(const qspi_xfer_desc_t *desc) {
 	switch (desc->mode) {
 	case QSPI_MODE_SIO:
-		QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_SIO_EN;
+		QSPIC_CTRL_REG = QSPIC_CTRL_REG_SIO_EN;
 		break;
 	case QSPI_MODE_DIO:
-		QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DIO_EN;
+		QSPIC_CTRL_REG = QSPIC_CTRL_REG_DIO_EN;
 		break;
 	case QSPI_MODE_QIO:
-		QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QIO_EN;
+		QSPIC_CTRL_REG = QSPIC_CTRL_REG_QIO_EN;
 		break;
 	}
 
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_ENABLE_BUS;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_ENABLE_BUS;
 	if ((desc->tx_data && desc->tx_len) || desc->dummy_cycles_after_tx) {
 		qspi_tx(desc);
 	}
 	if (desc->rx_data && desc->rx_len) {
 		qspi_rx(desc);
 	}
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_DISABLE_BUS;
 }
 
 static void qspic_deassert_reassert_cs(void) {
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS;
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_ENABLE_BUS;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_DISABLE_BUS;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_ENABLE_BUS;
 }
 
 const uint8_t sfdp_read_header_cmd[] = { JEDEC_CMD_RDSFDP, 0x00, 0x00, 0x00 };
@@ -750,7 +735,7 @@ int main(void) {
 
 	// QSPI enable
 	QSPIC_DEASSERT_CS();
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_SIO_EN;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_SIO_EN;
 
 	/* QSPI IO config, release reset, DO idle level high */
 	/* 0x20 = RST/IO3 high */
@@ -776,33 +761,33 @@ int main(void) {
 	}
 
 /*
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QIO_EN;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_QIO_EN;
 	QSPIC_WRITEDATA8_REG = 0xff;
 	QSPIC_WAIT_NOT_BUSY();
 
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DIO_EN;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_DIO_EN;
 	QSPIC_WRITEDATA8_REG = 0xff;
 	QSPIC_WAIT_NOT_BUSY();
 
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_SIO_EN;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_SIO_EN;
 	qspic_deassert_reassert_cs();
 	QSPIC_WRITEDATA8_REG = 0xf5;
 	QSPIC_WAIT_NOT_BUSY();
 
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_DISABLE_BUS;
 //	qspic_deassert_reassert_cs();
 //	QSPIC_WRITEDATA8_REG = 0xaa;
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QIO_EN;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_QIO_EN;
 	QSPIC_WRITEDATA16_REG = 0xaa55;
 	QSPIC_WAIT_NOT_BUSY();
 
 	qspic_deassert_reassert_cs();
 
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_QIO_EN;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_QIO_EN;
 	QSPIC_WRITEDATA16_REG = 0xaa55;
 	QSPIC_WAIT_NOT_BUSY();
 
-	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_DISABLE_BUS;
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_DISABLE_BUS;
 */
 /*
 	uint8_t tx_data[256];
