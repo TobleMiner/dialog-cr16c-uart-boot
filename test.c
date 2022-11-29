@@ -148,6 +148,18 @@
 
 #define QSPIC_WAIT_NOT_BUSY()	do { } while (QSPIC_STATUS_REG & QSPIC_STATUS_REG_BUSY)
 
+#define JEDEC_CMD_RDID		0x9F
+#define JEDEC_CMD_RDSFDP	0x5A
+#define JEDEC_CMD_WREN		0x06
+#define JEDEC_CMD_WRDI		0x04
+#define JEDEC_CMD_RDSR		0x05
+#define JEDEC_RDSR_WIP		(1 << 0)
+#define JEDEC_RDSR_WEL		(1 << 1)
+
+typedef struct jedec_nor_flash_info {
+	uint32_t size_bytes;
+} jedec_nor_flash_info_t;
+
 extern unsigned int _data_loadaddr;
 extern unsigned int _data;
 extern unsigned int _ebss;
@@ -227,6 +239,22 @@ static void uart_putint(unsigned int val) {
 	str[5] = 0;
 	char *ptr = &str[4];
 	for (int i = 4; i >= 0; i--) {
+		if (!val) {
+			break;
+		}
+		str[i] = '0' + (val % 10);
+		ptr = &str[i];
+		val /= 10;
+	}
+	uart_puts(ptr);
+}
+
+static void uart_putlong(unsigned long val) {
+	char str[11];
+	str[9] = '0';
+	str[10] = 0;
+	char *ptr = &str[9];
+	for (int i = 9; i >= 0; i--) {
 		if (!val) {
 			break;
 		}
@@ -467,9 +495,9 @@ static void qspic_deassert_reassert_cs(void) {
 	QSPIC_CTRL_REG16 = QSPIC_CTRL_REG_ENABLE_BUS;
 }
 
-const uint8_t sfdp_read_header_cmd[] = { 0x5A, 0x00, 0x00, 0x00 };
+const uint8_t sfdp_read_header_cmd[] = { JEDEC_CMD_RDSFDP, 0x00, 0x00, 0x00 };
 
-static void qspic_read_parameter_table(uint8_t *parameter_header) {
+static void qspic_read_parameter_table(uint8_t *parameter_header, jedec_nor_flash_info_t *flash_info) {
 	uint8_t parameter_table[64];
 	unsigned int table_len = (unsigned int)parameter_header[3] * 4;
 	if (table_len > sizeof(parameter_table)) {
@@ -477,7 +505,7 @@ static void qspic_read_parameter_table(uint8_t *parameter_header) {
 		return ;
 	}
 	unsigned int table_id = parameter_header[0];
-	uint8_t read_parameter_table_cmd[] = { 0x5A, parameter_header[6], parameter_header[5], parameter_header[4] };
+	uint8_t read_parameter_table_cmd[] = { JEDEC_CMD_RDSFDP, parameter_header[6], parameter_header[5], parameter_header[4] };
 	qspi_xfer_desc_t read_param_table_desc = {
 		.mode = QSPI_MODE_SIO,
 		.tx_data = read_parameter_table_cmd,
@@ -486,12 +514,34 @@ static void qspic_read_parameter_table(uint8_t *parameter_header) {
 		.rx_data = parameter_table,
 		.rx_len = table_len
 	};
-	uart_puts("Parameter table: ");
+	qspi_write_then_read(&read_param_table_desc);
+	unsigned int table_type = parameter_header[0];
+	uart_puts("Parameter table @0x");
+	uart_putbyte_hex(parameter_header[6]);
+	uart_putbyte_hex(parameter_header[5]);
+	uart_putbyte_hex(parameter_header[4]);
+	uart_puts(": ");
 	uart_hexdump(parameter_table, table_len);
 	uart_puts("\r\n");
+
+	if (table_type == 0x00) {
+		uint32_t raw_size = (uint32_t)parameter_table[4] |
+				    (uint32_t)parameter_table[5] << 8 |
+				    (uint32_t)parameter_table[6] << 16 |
+				    (uint32_t)parameter_table[7] << 24;
+
+		uart_puts("Raw flash size 0x");
+		uart_putlong_hex(raw_size);
+		uart_puts("\r\n");
+		if (raw_size & (1L << 31)) {
+			flash_info->size_bytes = (1 << raw_size) / 8UL;
+		} else {
+			flash_info->size_bytes = (raw_size + 1) / 8UL;
+		}
+	}
 }
 
-static void qspic_read_sfdp(void) {
+static void qspic_read_sfdp(jedec_nor_flash_info_t *flash_info) {
 	uint8_t sfdp_header[8];
 	qspi_xfer_desc_t desc = {
 		.mode = QSPI_MODE_SIO,
@@ -515,7 +565,7 @@ static void qspic_read_sfdp(void) {
 		uint8_t parameter_header[8];
 
 		unsigned int address = sizeof(sfdp_header) + sizeof(parameter_header) * hdr_idx;
-		uint8_t read_parameter_header_cmd[] = { 0x5A, (address >> 16) & 0xff, (address >> 8) & 0xff, address & 0xff };
+		uint8_t read_parameter_header_cmd[] = { JEDEC_CMD_RDSFDP, (address >> 16) & 0xff, (address >> 8) & 0xff, address & 0xff };
 		qspi_xfer_desc_t read_param_header_desc = {
 			.mode = QSPI_MODE_SIO,
 			.tx_data = read_parameter_header_cmd,
@@ -530,7 +580,7 @@ static void qspic_read_sfdp(void) {
 		uart_puts(": ");
 		uart_hexdump(parameter_header, sizeof(parameter_header));
 		uart_puts("\r\n");
-		qspic_read_parameter_table(parameter_header);
+		qspic_read_parameter_table(parameter_header, flash_info);
 	}
 }
 
@@ -635,7 +685,11 @@ int main(void) {
 	qspi_write_then_read(&desc);
 */
 	WATCHDOG_REG = 0xff;
-	qspic_read_sfdp();
+	jedec_nor_flash_info_t flash_info = { 0 };
+	qspic_read_sfdp(&flash_info);
+	uart_puts("Flash size ");
+	uart_putlong(flash_info.size_bytes);
+	uart_puts(" bytes\r\n");
 /*
 	unsigned int aux_clk_config = CLK_AUX2_REG;
 	dump_reg16("CLK_AUX2_REG", CLK_AUX2_REG);
