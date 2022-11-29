@@ -148,6 +148,15 @@
 
 #define QSPIC_WAIT_NOT_BUSY()	do { } while (QSPIC_STATUS_REG & QSPIC_STATUS_REG_BUSY)
 
+#define RESET_INT_PENDING_REG				MMIO16(0xFF5402)
+#define RESET_INT_PENDING_REG_UART_TI_INT_PEND		(1 << 5)
+#define RESET_INT_PENDING_REG_UART_RI_INT_PEND		(1 << 4)
+#define INT2_PRIORITY_REG				MMIO16(0xFF5404)
+#define INT2_PRIORITY_REG_UART_TI_INT_PRIO_MASK		(7 << 4)
+#define INT2_PRIORITY_REG_UART_TI_INT_PRIO_SHIFT	4
+#define INT2_PRIORITY_REG_UART_RI_INT_PRIO_MASK		(7 << 0)
+#define INT2_PRIORITY_REG_UART_RI_INT_PRIO_SHIFT	0
+
 #define JEDEC_CMD_RDID		0x9F
 #define JEDEC_CMD_RDSFDP	0x5A
 #define JEDEC_CMD_WREN		0x06
@@ -211,14 +220,11 @@ typedef struct vector_table {
 	funcp_t reserved30;
 } vector_table_t;
 
-static void uart_puts(const char *str) {
+void uart_puts(const char *str);
+void uart_puts(const char *str) {
 	while (*str) {
 		UART_RX_TX_REG = *str++;
-		while (!(UART_CTRL_REG & UART_CTRL_REG_TI)) {
-			if (UART_CTRL_REG & UART_CTRL_REG_RI) {
-				UART_CLEAR_RX_INT_REG = 1;
-			}
-		}
+		while (!(UART_CTRL_REG & UART_CTRL_REG_TI));
 		UART_CLEAR_TX_INT_REG = 1;
 	}
 }
@@ -233,7 +239,8 @@ static void uart_putbyte_hex(unsigned char byt) {
 	uart_puts(str);
 }
 
-static void uart_hexdump(void *ptr, unsigned int len) {
+void uart_hexdump(void *ptr, unsigned int len);
+void uart_hexdump(void *ptr, unsigned int len) {
 	unsigned char *ptr8 = ptr;
 	while (len--) {
 		WATCHDOG_REG = 0xff;
@@ -241,7 +248,8 @@ static void uart_hexdump(void *ptr, unsigned int len) {
 	}
 }
 
-static void uart_putint(unsigned int val) {
+void uart_putint(unsigned int val);
+void uart_putint(unsigned int val) {
 	char str[6];
 	str[4] = '0';
 	str[5] = 0;
@@ -257,7 +265,8 @@ static void uart_putint(unsigned int val) {
 	uart_puts(ptr);
 }
 
-static void uart_putlong(unsigned long val) {
+void uart_putlong(unsigned long val);
+void uart_putlong(unsigned long val) {
 	char str[11];
 	str[9] = '0';
 	str[10] = 0;
@@ -273,14 +282,22 @@ static void uart_putlong(unsigned long val) {
 	uart_puts(ptr);
 }
 
-static void uart_putint_hex(unsigned int i) {
+void uart_putint_hex(unsigned int i);
+void uart_putint_hex(unsigned int i) {
 	uart_putbyte_hex(i >> 8);
 	uart_putbyte_hex(i & 0xff);
 }
 
-static void uart_putlong_hex(unsigned long i) {
+void uart_putlong_hex(unsigned long i);
+void uart_putlong_hex(unsigned long i) {
+	uart_puts("longhex");
 	uart_putint_hex(i >> 16);
 	uart_putint_hex(i & 0xffff);
+}
+
+void uart_putnewline(void);
+void uart_putnewline(void) {
+	uart_puts("\r\n");
 }
 
 __attribute__((noreturn))
@@ -324,7 +341,16 @@ static void dbg_trap(void) {
 	print_trap("Debug");
 }
 
-__attribute__ ((section(".vectors")))
+static unsigned int num_rx_interrupts = 0;
+static void uart_rx_int(void) {
+	UART_RX_TX_REG;
+	if (UART_CTRL_REG & UART_CTRL_REG_RI) {
+		UART_CLEAR_RX_INT_REG = 1;
+	}
+	RESET_INT_PENDING_REG = RESET_INT_PENDING_REG_UART_RI_INT_PEND;
+	num_rx_interrupts++;
+}
+
 vector_table_t vector_table = {
 	.svc_trap = svc_trap,
 	.dvz_trap = dvz_trap,
@@ -333,12 +359,17 @@ vector_table_t vector_table = {
 	.trc_trap = trc_trap,
 	.iad_trap = iad_trap,
 	.dbg_trap = dbg_trap,
+	.uart_ri_int = uart_rx_int,
 };
 
 static void uart_init(void) {
 	P0_DIR_REG |= 0x03;
 	P0_MODE_REG |= 0x01;
 	UART_CTRL_REG = UART_CTRL_REG_UART_TEN | UART_CTRL_REG_UART_REN;
+/*
+	INT2_PRIORITY_REG &= INT2_PRIORITY_REG_UART_RI_INT_PRIO_MASK;
+	INT2_PRIORITY_REG |= (1 << INT2_PRIORITY_REG_UART_RI_INT_PRIO_SHIFT);
+*/
 }
 
 int main(void);
@@ -674,12 +705,31 @@ static void qspic_read_sfdp(jedec_nor_flash_info_t *flash_info) {
 	}
 }
 
+#define FUNCTION_ADDRESS(funcptr_) (((intptr_t)funcptr_) << 1)
+
+extern void real_vector_table;
+
 int main(void) {
 	uart_puts("Port 0 direction register should be at @0x");
 	uart_putlong_hex((unsigned long)&P0_DIR_REG);
 	uart_puts("\r\n");
 
-//	QSPIC_CTRL_REG16 /= 0;
+	uart_puts("SVC trap handler: 0x");
+	uart_putlong_hex(FUNCTION_ADDRESS(svc_trap));
+	uart_puts("\r\n");
+	uart_puts("main(): 0x");
+	uart_putlong_hex(FUNCTION_ADDRESS(main));
+	uart_puts("\r\n");
+
+	funcp_t *vectors = &vector_table;
+	for (int i = 0; i < sizeof(vector_table) / sizeof(funcp_t); i++) {
+		uart_puts("Vector ");
+		uart_putint(i);
+		uart_puts(" 0x");
+		uart_putlong_hex((unsigned long)vectors[i]);
+		uart_puts("\r\n");
+	}
+
 
 //	P0_DIR_REG |= 0x0c;
 //	P0_DATA_REG &= ~0x02;
@@ -772,6 +822,9 @@ int main(void) {
 	qspi_write_then_read(&desc);
 */
 	WATCHDOG_REG = 0xff;
+
+	asm("excp svc");
+	uart_puts("SVC call returned\r\n");
 
 	jedec_nor_flash_info_t flash_info = { 0 };
 	qspic_read_sfdp(&flash_info);
