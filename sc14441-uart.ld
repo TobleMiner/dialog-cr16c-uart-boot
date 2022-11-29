@@ -1,4 +1,5 @@
-ENTRY(_bootloader_entrypoint)
+EXTERN(_vector_table)
+ENTRY(bootloader_entry)
 MEMORY
 {
  RES (r)	: ORIGIN = 0x00010000, LENGTH = 0x80
@@ -7,9 +8,14 @@ MEMORY
 SECTIONS
 {
  .text : {
+  *(.text.crt0)
+  . = ALIGN(4);
   *(.text*)
   . = ALIGN(4);
   *(.rodata*)
+  . = ALIGN(4);
+  __intbase = .;
+  KEEP (*(.vectors))
  } >ram
  .preinit_array : {
   . = ALIGN(4);
@@ -45,5 +51,6 @@ SECTIONS
   __ebss = .;
  } >ram
  end = .;
- __stack = ORIGIN(ram) + LENGTH(ram);
+ __istack = ORIGIN(ram) + LENGTH(ram);
+ __ustack = __istack - 0x100;
 }

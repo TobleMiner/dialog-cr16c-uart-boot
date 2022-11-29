@@ -156,6 +156,13 @@
 #define JEDEC_RDSR_WIP		(1 << 0)
 #define JEDEC_RDSR_WEL		(1 << 1)
 
+#define UART_CMD_PING		0x01
+#define UART_CMD_CANGE_BAUDRATE	0x02
+#define UART_CMD_FLASH_INFO	0x03
+#define UART_CMD_ERASE_SECTOR	0x04
+#define UART_CMD_PROGRAM_PAGE	0x05
+#define UART_CND_RESET		0x06
+
 typedef struct jedec_nor_flash_info {
 	uint32_t size_bytes;
 } jedec_nor_flash_info_t;
@@ -170,38 +177,39 @@ typedef void (*funcp_t) (void);
 extern funcp_t _preinit_array_start, _preinit_array_end;
 extern funcp_t _init_array_start, _init_array_end;
 
-int main(void);
-
-void bootloader_entrypoint(void) __attribute__((noreturn));
-void bootloader_entrypoint() {
-	asm volatile ("movd $__stack, (sp) \n"
-		      "movd $__stack, (r1, r0) \n"
-		      "lprd (r1, r0), isp" ::: "r0", "r1");
-
-	volatile unsigned *src, *dest;
-		for (src = &_data_loadaddr, dest = &_data;
-		dest < &_edata;
-		src++, dest++) {
-		*dest = *src;
-	}
-
-	while (dest < &_ebss) {
-		*dest++ = 0;
-	}
-
-	/* Call constructors. */
-	funcp_t *fp;
-	for (fp = &_preinit_array_start; fp < &_preinit_array_end; fp++) {
-		(*fp)();
-	}
-	for (fp = &_init_array_start; fp < &_init_array_end; fp++) {
-		(*fp)();
-	}
-
-	(void)main();
-
-	while (1);
-}
+typedef struct vector_table {
+	funcp_t reserved00;
+	funcp_t nmi;
+	funcp_t reserved02;
+	funcp_t reserved03;
+	funcp_t reserved04;
+	funcp_t svc_trap;
+	funcp_t dvz_trap;
+	funcp_t flg_trap;
+	funcp_t bpt_trap;
+	funcp_t trc_trap;
+	funcp_t und_trap;
+	funcp_t reserved11;
+	funcp_t iad_trap;
+	funcp_t reserved13;
+	funcp_t dbg_trap;
+	funcp_t ise_int;
+	funcp_t access12_int;
+	funcp_t keyb_int;
+	funcp_t reserved_int18;
+	funcp_t ct_classd_int;
+	funcp_t uart_ri_int;
+	funcp_t uart_ti_int;
+	funcp_t spi_int;
+	funcp_t tim0_int;
+	funcp_t tim1_int;
+	funcp_t clk100_int;
+	funcp_t dip_int;
+	funcp_t ad_int;
+	funcp_t spi2;
+	funcp_t dsp_int;
+	funcp_t reserved30;
+} vector_table_t;
 
 static void uart_puts(const char *str) {
 	while (*str) {
@@ -279,6 +287,88 @@ __attribute__((noreturn))
 static void reset(void) {
 	DEBUG_REG |= DEBUG_REG_SW_RESET;
 	while(1);
+}
+
+static void print_trap(const char *trap) {
+	uart_puts("\r\n=======TRAP=========\r\n");
+	uart_puts(trap);
+	uart_puts("\r\n=====ENDTRAP=========\r\n");
+	reset();
+}
+
+static void svc_trap(void) {
+	print_trap("Supervisor call");
+}
+
+static void dvz_trap(void) {
+	print_trap("Divide by zero");
+}
+
+static void flg_trap(void) {
+	print_trap("Flag");
+}
+
+static void bpt_trap(void) {
+	print_trap("Breakpoint");
+}
+
+static void trc_trap(void) {
+	print_trap("Trace");
+}
+
+static void iad_trap(void) {
+	print_trap("Illegal address");
+}
+
+static void dbg_trap(void) {
+	print_trap("Debug");
+}
+
+__attribute__ ((section(".vectors")))
+vector_table_t vector_table = {
+	.svc_trap = svc_trap,
+	.dvz_trap = dvz_trap,
+	.flg_trap = flg_trap,
+	.bpt_trap = bpt_trap,
+	.trc_trap = trc_trap,
+	.iad_trap = iad_trap,
+	.dbg_trap = dbg_trap,
+};
+
+static void uart_init(void) {
+	P0_DIR_REG |= 0x03;
+	P0_MODE_REG |= 0x01;
+	UART_CTRL_REG = UART_CTRL_REG_UART_TEN | UART_CTRL_REG_UART_REN;
+}
+
+int main(void);
+
+void c_entry(void) __attribute__((noreturn));
+void c_entry() {
+	volatile unsigned *src, *dest;
+	for (src = &_data_loadaddr, dest = &_data; dest < &_edata; src++, dest++) {
+		*dest = *src;
+	}
+
+	while (dest < &_ebss) {
+		*dest++ = 0;
+	}
+
+	/* Call constructors. */
+	funcp_t *fp;
+	for (fp = &_preinit_array_start; fp < &_preinit_array_end; fp++) {
+		(*fp)();
+	}
+	for (fp = &_init_array_start; fp < &_init_array_end; fp++) {
+		(*fp)();
+	}
+
+	uart_init();
+	uart_puts("C entry, calling main()\r\n");
+
+	(void)main();
+
+	while (1);
 }
 
 static void dump_reg16(const char *name, unsigned int value) {
@@ -585,14 +675,11 @@ static void qspic_read_sfdp(jedec_nor_flash_info_t *flash_info) {
 }
 
 int main(void) {
-	P0_DIR_REG |= 0x03;
-	P0_MODE_REG |= 0x01;
-
-	UART_CTRL_REG = UART_CTRL_REG_UART_TEN | UART_CTRL_REG_UART_REN;
-
 	uart_puts("Port 0 direction register should be at @0x");
 	uart_putlong_hex((unsigned long)&P0_DIR_REG);
 	uart_puts("\r\n");
+
+//	QSPIC_CTRL_REG16 /= 0;
 
 //	P0_DIR_REG |= 0x0c;
 //	P0_DATA_REG &= ~0x02;
@@ -685,6 +772,7 @@ int main(void) {
 	qspi_write_then_read(&desc);
 */
 	WATCHDOG_REG = 0xff;
+
 	jedec_nor_flash_info_t flash_info = { 0 };
 	qspic_read_sfdp(&flash_info);
 	uart_puts("Flash size ");
