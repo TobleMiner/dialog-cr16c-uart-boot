@@ -7,8 +7,7 @@ extern unsigned int _ebss;
 extern unsigned int _edata;
 extern unsigned int _stack;
 
-extern funcp_t _preinit_array_start, _preinit_array_end;
-extern funcp_t _init_array_start, _init_array_end;
+extern funcp_t _ctors_start, _ctors_end;
 
 int main(void);
 
@@ -25,10 +24,7 @@ void c_entry() {
 
 	/* Call constructors. */
 	funcp_t *fp;
-	for (fp = &_preinit_array_start; fp < &_preinit_array_end; fp++) {
-		(*fp)();
-	}
-	for (fp = &_init_array_start; fp < &_init_array_end; fp++) {
+	for (fp = &_ctors_start; fp < &_ctors_end; fp++) {
 		(*fp)();
 	}
 

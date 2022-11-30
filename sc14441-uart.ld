@@ -16,19 +16,10 @@ SECTIONS
   . = ALIGN(4);
   __intbase = .;
   KEEP (*(.vectors))
- } >ram
- .preinit_array : {
   . = ALIGN(4);
-  __preinit_array_start = .;
-  KEEP (*(.preinit_array))
-  __preinit_array_end = .;
- } >ram
- .init_array : {
-  . = ALIGN(4);
-  __init_array_start = .;
-  KEEP (*(SORT(.init_array.*)))
-  KEEP (*(.init_array))
-  __init_array_end = .;
+  __ctors_start = .;
+  KEEP (*(.ctors))
+  __ctors_end = .;
  } >ram
  . = ALIGN(4);
  __etext = .;
