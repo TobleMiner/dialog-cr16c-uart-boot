@@ -38,7 +38,6 @@ vector\start:
 	 */
 	sprd isp, (r1, r0)
 	loadd 0x00(r1, r0), (r3, r2)
-	loadd 0x00(r1, r0), (r3, r2)
 	addd $1, (r3, r2)
 	stord (r3, r2), 0x0(r1, r0)
 .endif
