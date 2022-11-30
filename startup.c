@@ -3,9 +3,9 @@
 
 extern unsigned int _data_loadaddr;
 extern unsigned int _data;
-extern unsigned int _ebss;
 extern unsigned int _edata;
-extern unsigned int _stack;
+extern unsigned int _bss;
+extern unsigned int _ebss;
 
 extern funcp_t _ctors_start, _ctors_end;
 
@@ -18,7 +18,7 @@ void c_entry() {
 		*dest = *src;
 	}
 
-	while (dest < &_ebss) {
+	for (dest = &_bss; dest < &_ebss; dest++) {
 		*dest++ = 0;
 	}
 

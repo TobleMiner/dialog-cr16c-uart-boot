@@ -32,6 +32,8 @@ SECTIONS
  } >ram
  __data_loadaddr = LOADADDR(.data);
  .bss (NOLOAD) : {
+  . = ALIGN(4);
+  __bss = .;
   *(.bss*)
   *(COMMON)
   . = ALIGN(4);
