@@ -23,10 +23,6 @@ SECTIONS
  } >ram
  . = ALIGN(4);
  __etext = .;
- .noinit (NOLOAD) : {
-  *(.noinit*)
- } >ram
- . = ALIGN(4);
  .data : {
   __data = .;
   *(.data*)
@@ -35,12 +31,16 @@ SECTIONS
   __edata = .;
  } >ram
  __data_loadaddr = LOADADDR(.data);
- .bss : {
+ .bss (NOLOAD) : {
   *(.bss*)
   *(COMMON)
   . = ALIGN(4);
   __ebss = .;
  } >ram
+ .noinit (NOLOAD) : {
+  *(.noinit*)
+ } >ram
+ . = ALIGN(4);
  end = .;
  __istack = ORIGIN(ram) + LENGTH(ram);
  __ustack = __istack - 0x100;
