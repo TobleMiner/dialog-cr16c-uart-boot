@@ -15,4 +15,11 @@ bootloader_entry:
 	/* Setup exception table base address */
 	movd $__intbase, (r1, r0)
 	lprd (r1, r0), intbase
+	/* Enable interrupts locally */
+	di
+	/* Enable interrupts globally */
+	spr psr, r0
+	orw $0x800, r0
+	lpr r0, psr
+	/* Branch to C code */
 	br _c_entry
