@@ -19,12 +19,16 @@ void uart_init(void) {
 */
 }
 
+void uart_putc(char c) {
+	UART_RX_TX_REG = c;
+	while (!(UART_CTRL_REG & UART_CTRL_REG_TI));
+	UART_CLEAR_TX_INT_REG = 1;
+}
+
 void uart_puts(const char *str) {
 	while (*str) {
 		watchdog_reset();
-		UART_RX_TX_REG = *str++;
-		while (!(UART_CTRL_REG & UART_CTRL_REG_TI));
-		UART_CLEAR_TX_INT_REG = 1;
+		uart_putc(*str++);
 	}
 }
 
@@ -92,3 +96,10 @@ void uart_putnewline(void) {
 	uart_puts("\r\n");
 }
 
+void uart_write(const void *ptr, unsigned int len) {
+	const unsigned char *ptr8 = ptr;
+	while (len--) {
+		watchdog_reset();
+		uart_putc((char)*ptr8++);
+	}
+}

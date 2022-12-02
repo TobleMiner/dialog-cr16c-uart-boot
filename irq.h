@@ -46,3 +46,11 @@ typedef struct vector_table {
 	funcp_t dsp_int;
 	funcp_t reserved30;
 } vector_table_t;
+
+static inline void disable_interrupts(void) {
+	asm volatile("di");
+}
+
+static inline void enable_interrupts(void) {
+	asm volatile("di");
+}

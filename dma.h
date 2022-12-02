@@ -2,11 +2,51 @@
 
 #include "util.h"
 
+
+#define DMA_SPI_RX		0
+#define DMA_SPI_TX		1
+#define DMA_UART_RX		2
+#define DMA_UART_TX		3
+
+#define DMAX_BASE(i)		(0xFF4400UL + (unsigned long)i * 0x10UL)
+#define DMAX_A_STARTL_REG(i)	MMIO16(DMAX_BASE(i) + 0x00UL)
+#define DMAX_A_STARTH_REG(i)	MMIO16(DMAX_BASE(i) + 0x02UL)
+#define DMAX_B_STARTL_REG(i)	MMIO16(DMAX_BASE(i) + 0x04UL)
+#define DMAX_B_STARTH_REG(i)	MMIO16(DMAX_BASE(i) + 0x06UL)
+#define DMAX_INT_REG(i)		MMIO16(DMAX_BASE(i) + 0x08UL)
+#define DMAX_LEN_REG(i)		MMIO16(DMAX_BASE(i) + 0x0AUL)
+#define DMAX_CTRL_REG(i)	MMIO16(DMAX_BASE(i) + 0x0CUL)
+#define DMAX_IDX_REG(i)		MMIO16(DMAX_BASE(i) + 0x0EUL)
+
+#define DMAX_CTRL_REG_DMA_PRIO_MASK	(3 << 8)
+#define DMAX_CTRL_REG_DMA_PRIO_LOW	(0 << 8)
+#define DMAX_CTRL_REG_DMA_PRIO_LOWMID	(1 << 8)
+#define DMAX_CTRL_REG_DMA_PRIO_MIDHIGH	(2 << 8)
+#define DMAX_CTRL_REG_DMA_PRIO_HIGH	(3 << 8)
+#define DMAX_CTRL_REG_CIRCULAR		(1 << 7)
+#define DMAX_CTRL_REG_AINC		(1 << 6)
+#define DMAX_CTRL_REG_BINC		(1 << 5)
+#define DMAX_CTRL_REG_DREQ_MODE		(1 << 4)
+#define DMAX_CTRL_REG_DINT_MODE		(1 << 3)
+#define DMAX_CTRL_REG_BW_MASK		(3 << 1)
+#define DMAX_CTRL_REG_BW_BYTE		(0 << 1)
+#define DMAX_CTRL_REG_BW_HALFWORD	(1 << 1)
+#define DMAX_CTRL_REG_BW_WORD		(2 << 1)
+#define DMAX_CTRL_REG_DMA_ON		(1 << 0)
+
+#define DMA0_A_STARTL_REG	MMIO16(0xFF4400)
+#define DMA0_A_STARTH_REG	MMIO16(0xFF4402)
+#define DMA0_B_STARTL_REG	MMIO16(0xFF4404)
+#define DMA0_B_STARTH_REG	MMIO16(0xFF4406)
+#define DMA0_INT_REG		MMIO16(0xFF4408)
+#define DMA0_INT_REG		MMIO16(0xFF4408)
+#define DMA0_LEN_REG		MMIO16(0xFF440A)
 #define DMA0_CTRL_REG		MMIO16(0xFF440C)
+#define DMA0_IDX_REG		MMIO16(0xFF440E)
+
 #define DMA1_CTRL_REG		MMIO16(0xFF441C)
 #define DMA2_CTRL_REG		MMIO16(0xFF442C)
 #define DMA3_CTRL_REG		MMIO16(0xFF443C)
-#define DMAX_CTRL_REG_DINT_MODE	(1 << 3)
 
 void dma_disable_irq_rerouting(void);
 
