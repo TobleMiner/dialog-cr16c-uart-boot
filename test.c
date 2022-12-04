@@ -799,20 +799,13 @@ static void call_checksum_handler(const cmd_handler_t *handler, uint32_t id, con
 		start_address += read_length;
 	}
 
-	send_response_with_payload_(RESPONSE_CHECKSUM, id, 4);
-
 	/* Inner CRC of flash data */
 	crc = crc32_final(crc);
 	uint8_t crc_buf[4];
 	write_le32(crc_buf, crc);
 	uart_write(crc_buf, sizeof(crc_buf));
 
-	/* Outer CRC of message */
-	crc = crc32_init();
-	crc = crc32_update(crc, crc_buf, sizeof(crc_buf));
-	crc = crc32_final(crc);
-	write_le32(crc_buf, crc);
-	uart_write(crc_buf, sizeof(crc_buf));
+	send_response_with_payload(RESPONSE_CHECKSUM, id, crc_buf, sizeof(crc_buf));
 }
 
 static const cmd_handler_t cmd_handlers[] = {
