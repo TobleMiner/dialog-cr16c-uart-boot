@@ -72,7 +72,7 @@ class ReadFlashCommand(Command):
 
 	def get_timeout(self, baudrate):
 		base = super().get_timeout(baudrate)
-		return base + 20 * self.length / (baudrate / 10)
+		return base + 2 * self.length / (baudrate / 10)
 
 	def __repr__(self):
 		return f"ReadFlash(0x{self.start_address:08x}, {self.length})"
@@ -84,6 +84,37 @@ class SetBaudrateCommand(Command):
 
 	def get_payload(self):
 		return struct.pack("<L", self.baudrate)
+
+class EraseFlashSectorCommand(Command):
+	def __init__(self, address):
+		super().__init__(0x03)
+		self.address = address
+
+	def get_payload(self):
+		return struct.pack("<L", self.address)
+
+	def get_timeout(self, baudrate):
+		base = super().get_timeout(baudrate)
+		return base + 0.5
+
+	def __repr__(self):
+		return f"EraseFlashSector(0x{self.address:08x})"
+
+class ProgramFlashPageCommand(Command):
+	def __init__(self, start_address, data):
+		super().__init__(0x04)
+		self.start_address = start_address
+		self.data = data
+
+	def get_payload(self):
+		return struct.pack("<L", self.start_address) + self.data
+
+	def get_timeout(self, baudrate):
+		base = super().get_timeout(baudrate)
+		return base + 2 * len(self.data) / (baudrate / 10) + 0.003
+
+	def __repr__(self):
+		return f"ProgramFlashPage(0x{self.start_address:08x})"
 
 class ResponseHeader():
 	LENGTH = 13
@@ -143,7 +174,7 @@ class Response():
 		return f"Response to 0x{self.header.id:04x}, type 0x{self.header.response:02x}, {len(self.payload)} bytes of data"
 
 class ErrorResponse(Response):
-	RESPONSE_CODES = [ 0x00, 0x02, 0x03, 0x06 ]
+	RESPONSE_CODES = [ 0x00, 0x02, 0x03, 0x06, 0x08 ]
 
 	def __init__(self, header, payload):
 		super().__init__(header, payload)
@@ -291,6 +322,18 @@ class LoaderSession():
 
 		return False
 
+	def erase_flash_sector(self, address):
+		cmd = EraseFlashSectorCommand(address)
+		dispatch = self.send_command(cmd)
+		resp = self.await_response(dispatch)
+		return (resp and isinstance(resp, SyncResponse))
+
+	def program_flash_page(self, address, data):
+		cmd = ProgramFlashPageCommand(address, data)
+		dispatch = self.send_command(cmd)
+		resp = self.await_response(dispatch)
+		return (resp and isinstance(resp, SyncResponse))
+
 with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	while True:
 		byts = ser.read(1)
@@ -358,10 +401,23 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 
 #	sleep(1)
 
-	with open("flash_readback.bin", "wb") as f:
-		flash_data = session.read_flash(0x0, 0x200000)
-		f.write(flash_data)
-	print("Flash read done")
+	print("Reading sector 0 before erase...")
+	flash_data = session.read_flash(0x0, 0x1000)
+	print("Sector 0 before erase:")
+	print(flash_data)
+	print("Erasing sector 0...")
+	print(session.erase_flash_sector(0x0))
+	print("Reading sector 0 after erase...")
+	flash_data = session.read_flash(0x0, 0x1000)
+	print("Sector 0 after erase:")
+	print(flash_data)
+	print("Programming page 0 after erase...")
+	page_data = b''.join([ i.to_bytes(1, byteorder='little') for i in range(256) ])
+	print(session.program_flash_page(0x0, page_data))
+	print("Reading page 0 after programming...")
+	flash_data = session.read_flash(0x0, 0x100)
+	print("Sector 0 after programming:")
+	print(flash_data)
 
 	sleep(5)
 

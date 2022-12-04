@@ -193,3 +193,48 @@ void qspi_write_then_read(const qspi_xfer_desc_t *desc) {
 	QSPIC_CTRL_REG = QSPIC_CTRL_REG_DISABLE_BUS;
 }
 
+void qspi_scatter_transfer(qspi_mode_t mode, const qpsi_xfer_action_t *actions, unsigned int num_actions) {
+	switch (mode) {
+	case QSPI_MODE_SIO:
+		QSPIC_CTRL_REG = QSPIC_CTRL_REG_SIO_EN;
+		break;
+	case QSPI_MODE_DIO:
+		QSPIC_CTRL_REG = QSPIC_CTRL_REG_DIO_EN;
+		break;
+	case QSPI_MODE_QIO:
+		QSPIC_CTRL_REG = QSPIC_CTRL_REG_QIO_EN;
+		break;
+	}
+
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_ENABLE_BUS;
+	while (num_actions--) {
+		qspi_xfer_desc_t desc = { 0 };
+
+		switch (actions->action) {
+		case QSPI_READ:
+			desc.rx_data = actions->rx_data;
+			desc.rx_len = actions->len;
+			qspi_rx(&desc);
+			break;
+		case QSPI_WRITE:
+			desc.tx_data = actions->tx_data;
+			desc.tx_len = actions->len;
+			qspi_tx(&desc);
+			break;
+		case QSPI_DUMMY:
+			desc.dummy_cycles_after_tx = actions->len;
+			qspi_tx(&desc);
+			break;
+		}
+		actions++;
+	}
+	QSPIC_CTRL_REG = QSPIC_CTRL_REG_DISABLE_BUS;
+}
+
+void qspi_set_write_protect(bool protection_on) {
+	if (protection_on) {
+		QSPIC_CFG_REG &= ~QSPIC_CFG_REG_IO2_WP_DATA;
+	} else {
+		QSPIC_CFG_REG |= QSPIC_CFG_REG_IO2_WP_DATA;
+	}
+}

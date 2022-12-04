@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "util.h"
@@ -50,5 +51,23 @@ typedef struct qspi_xfer_desc {
 	size_t rx_len;
 } qspi_xfer_desc_t;
 
+typedef enum {
+	QSPI_READ,
+	QSPI_WRITE,
+	QSPI_DUMMY
+} qspi_action_t;
+
+typedef struct qspi_xfer_action {
+	qspi_action_t action;
+	union {
+		const void *tx_data;
+		void *rx_data;
+	};
+	size_t len;
+} qpsi_xfer_action_t;
+
 void qspi_init(void);
 void qspi_write_then_read(const qspi_xfer_desc_t *desc);
+void qspi_scatter_transfer(qspi_mode_t mode, const qpsi_xfer_action_t *actions, unsigned int num_actions);
+void qspi_set_write_protect(bool protection_on);
+

@@ -40,10 +40,13 @@
 #define RESPONSE_DEBUG		0x05
 #define RESPONSE_INVALID_PARAM	0x06
 #define RESPONSE_ONLINE		0x07
+#define RESPONSE_FLASH_TIMEOUT	0x08
 
 #define TIMEOUT_HEADER		0x100000
 #define TIMEOUT_CMD		0x1000
 #define TIMEOUT_PARAM		0x10000
+#define TIMEOUT_SECTOR_ERASE	0x4000
+#define TIMEOUT_PAGE_PROGRAM	0x400
 
 typedef enum cmd_state {
 	CMD_STATE_WAIT_HEADER,
@@ -548,13 +551,35 @@ static void reset_uart_rx_dma(void) {
 	uart_rx_read_ptr = 0;
 }
 
-static void call_ping_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
-	send_response(RESPONSE_OK, id);
+static uint8_t read_flash_status_register(void) {
+	const uint8_t read_status_register_cmd[] = { 0x05 };
+	uint8_t status_register[1];
+	qspi_xfer_desc_t read_status_register_desc = {
+		.mode = QSPI_MODE_SIO,
+		.tx_data = read_status_register_cmd,
+		.tx_len = sizeof(read_status_register_cmd),
+		.dummy_cycles_after_tx = 0,
+		.rx_data = status_register,
+		.rx_len = sizeof(status_register)
+	};
+	qspi_write_then_read(&read_status_register_desc);
+
+	return status_register[0];
 }
 
-static void call_reset_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+static bool wait_flash_write_finished(unsigned int timeout) {
+	do {
+		uint8_t status = read_flash_status_register();
+		if (!(status & JEDEC_RDSR_WIP)) {
+			return true;
+		}
+	} while (timeout--);
+
+	return false;
+}
+
+static void call_ping_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
 	send_response(RESPONSE_OK, id);
-	system_reset();
 }
 
 static void call_set_baudrate_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
@@ -579,6 +604,86 @@ static void call_set_baudrate_handler(const cmd_handler_t *handler, uint32_t id,
 		send_response(RESPONSE_INVALID_PARAM, id);
 		break;
 	}
+}
+
+static void flash_write_enable(void) {
+	qspi_set_write_protect(false);
+
+	const uint8_t write_enable_cmd[] = { 0x06 };
+	const qspi_xfer_desc_t write_enable_desc = {
+		.mode = QSPI_MODE_SIO,
+		.tx_data = write_enable_cmd,
+		.tx_len = sizeof(write_enable_cmd),
+		.dummy_cycles_after_tx = 0,
+		.rx_data = NULL,
+		.rx_len = 0
+	};
+	qspi_write_then_read(&write_enable_desc);
+}
+
+static void call_erase_sector_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+	uint32_t address = read_le32(param_data);
+
+	flash_write_enable();
+
+	uint8_t erase_sector_cmd[] = { 0x20, (address >> 16) & 0xff, (address >> 8) & 0xff, address & 0xff };
+	qspi_xfer_desc_t erase_sector_desc = {
+		.mode = QSPI_MODE_SIO,
+		.tx_data = erase_sector_cmd,
+		.tx_len = sizeof(erase_sector_cmd),
+		.dummy_cycles_after_tx = 0,
+		.rx_data = NULL,
+		.rx_len = 0
+	};
+	qspi_write_then_read(&erase_sector_desc);
+
+	bool success = wait_flash_write_finished(TIMEOUT_SECTOR_ERASE);
+
+	qspi_set_write_protect(true);
+
+	if (success) {
+		send_response(RESPONSE_OK, id);
+	} else {
+		send_response(RESPONSE_FLASH_TIMEOUT, id);
+	}
+}
+
+static void call_program_page_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+	const uint8_t *param8 = param_data;
+	uint32_t address = read_le32(&param8[0]);
+
+	flash_write_enable();
+
+	uint8_t program_sector_cmd[] = { 0x02, (address >> 16) & 0xff, (address >> 8) & 0xff, address & 0xff };
+	qpsi_xfer_action_t actions[] = {
+		{
+			.action = QSPI_WRITE,
+			.tx_data = program_sector_cmd,
+			.len = sizeof(program_sector_cmd)
+		},
+		{
+			.action = QSPI_WRITE,
+			.tx_data = &param8[4],
+			.len = 256
+		}
+	};
+
+	qspi_scatter_transfer(QSPI_MODE_SIO, actions, ARRAY_SIZE(actions));
+
+	bool success = wait_flash_write_finished(TIMEOUT_PAGE_PROGRAM);
+
+	qspi_set_write_protect(true);
+
+	if (success) {
+		send_response(RESPONSE_OK, id);
+	} else {
+		send_response(RESPONSE_FLASH_TIMEOUT, id);
+	}
+}
+
+static void call_reset_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+	send_response(RESPONSE_OK, id);
+	system_reset();
 }
 
 static uint8_t flash_read_buffer[256];
@@ -640,6 +745,14 @@ static const cmd_handler_t cmd_handlers[] = {
 	[UART_CMD_SET_BAUDRATE] = {
 		.call = call_set_baudrate_handler,
 		.min_param_len = 4,
+	},
+	[UART_CMD_ERASE_SECTOR] = {
+		.call = call_erase_sector_handler,
+		.min_param_len = 4,
+	},
+	[UART_CMD_PROGRAM_PAGE] = {
+		.call = call_program_page_handler,
+		.min_param_len = 4 + 256,
 	},
 	[UART_CMD_RESET] = {
 		.call = call_reset_handler,
