@@ -116,6 +116,22 @@ class ProgramFlashPageCommand(Command):
 	def __repr__(self):
 		return f"ProgramFlashPage(0x{self.start_address:08x})"
 
+class RemoteFlashChecksumCommand(Command):
+	def __init__(self, start_address, length):
+		super().__init__(0x07)
+		self.start_address = start_address
+		self.length = length
+
+	def get_payload(self):
+		return struct.pack("<LL", self.start_address, self.length)
+
+	def get_timeout(self, baudrate):
+		base = super().get_timeout(baudrate)
+		return base + self.length * 8 / 100000
+
+	def __repr__(self):
+		return f"RemoteFlashChecksum(0x{self.start_address:08x}, {self.length})"
+
 class ResponseHeader():
 	LENGTH = 13
 
@@ -143,7 +159,8 @@ class Response():
 		RESPONSE_CODE_MAP = {
 			ErrorResponse: ErrorResponse.RESPONSE_CODES,
 			SyncResponse: SyncResponse.RESPONSE_CODES,
-			DebugResponse: DebugResponse.RESPONSE_CODES
+			DebugResponse: DebugResponse.RESPONSE_CODES,
+			ChecksumResponse: ChecksumResponse.RESPONSE_CODES
 		}
 		payload = b''
 		if data:
@@ -159,9 +176,15 @@ class Response():
 
 		for (resp_type, response_codes) in RESPONSE_CODE_MAP.items():
 			if header.response in response_codes:
+				if not resp_type.validate(payload):
+					continue
 				return resp_type(header, payload)
 
 		return Response(header, payload)
+
+	@classmethod
+	def validate(self, payload):
+		return True
 
 	def handle(self):
 		return False
@@ -195,6 +218,20 @@ class DebugResponse(Response):
 		print(''.join(chr(b) for b in self.payload), end='')
 #		print('DEBUG: ' + ''.join(chr(b) for b in self.payload))
 		return True
+
+class ChecksumResponse(Response):
+	RESPONSE_CODES = [ 0x09 ]
+
+	@classmethod
+	def validate(self, payload):
+		return len(payload) == 4
+
+	def __init__(self, header, payload):
+		super().__init__(header, payload)
+		self.checksum = struct.unpack("<L", payload)[0]
+
+	def __repr__(self):
+		return f"ChecksumResponse to 0x{self.header.id:04x}, checksum 0x{self.checksum:08x}"
 
 class LoaderSession():
 	SYNC_BYTE = 0xA5
@@ -334,6 +371,12 @@ class LoaderSession():
 		resp = self.await_response(dispatch)
 		return (resp and isinstance(resp, SyncResponse))
 
+	def remote_flash_checksum(self, address, length):
+		cmd = RemoteFlashChecksumCommand(address, length)
+		dispatch = self.send_command(cmd)
+		resp = self.await_response(dispatch)
+		return (resp and isinstance(resp, ChecksumResponse))
+
 with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	while True:
 		byts = ser.read(1)
@@ -399,8 +442,10 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 
 	print(session.set_baudrate(115200 * 2))
 
-#	sleep(1)
+	print(session.remote_flash_checksum(0x0, 0x200000))
 
+#	sleep(1)
+	"""
 	print("Reading sector 0 before erase...")
 	flash_data = session.read_flash(0x0, 0x1000)
 	print("Sector 0 before erase:")
@@ -418,7 +463,7 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	flash_data = session.read_flash(0x0, 0x100)
 	print("Sector 0 after programming:")
 	print(flash_data)
-
+	"""
 	sleep(5)
 
 	session.stop()

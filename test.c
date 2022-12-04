@@ -31,6 +31,7 @@
 #define UART_CMD_PROGRAM_PAGE	0x04
 #define UART_CMD_RESET		0x05
 #define UART_CMD_READ_FLASH	0x06
+#define UART_CMD_CHECKSUM	0x07
 
 #define RESPONSE_INVALID_CRC	0x00
 #define RESPONSE_CMD_OK		0x01
@@ -41,6 +42,7 @@
 #define RESPONSE_INVALID_PARAM	0x06
 #define RESPONSE_ONLINE		0x07
 #define RESPONSE_FLASH_TIMEOUT	0x08
+#define RESPONSE_CHECKSUM	0x09
 
 #define TIMEOUT_HEADER		0x100000
 #define TIMEOUT_CMD		0x1000
@@ -737,6 +739,51 @@ static void call_read_flash_handler(const cmd_handler_t *handler, uint32_t id, c
 */
 }
 
+static void call_checksum_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+	const uint8_t *param8 = param_data;
+	uint32_t start_address = read_le32(&param8[0]);
+	uint32_t length = read_le32(&param8[4]);
+
+	uint32_t crc = crc32_init();
+	while (length) {
+		uint32_t read_length = length;
+		if (read_length > sizeof(flash_read_buffer)) {
+			read_length = sizeof(flash_read_buffer);
+		}
+
+		uint8_t read_flash_cmd[] = { 0x03, (start_address >> 16) & 0xff, (start_address >> 8) & 0xff, start_address & 0xff };
+		qspi_xfer_desc_t desc = {
+			.mode = QSPI_MODE_SIO,
+			.tx_data = read_flash_cmd,
+			.tx_len = sizeof(read_flash_cmd),
+			.dummy_cycles_after_tx = 0,
+			.rx_data = flash_read_buffer,
+			.rx_len = read_length
+		};
+		qspi_write_then_read(&desc);
+		crc = crc32_update(crc, flash_read_buffer, read_length);
+		watchdog_reset();
+
+		length -= read_length;
+		start_address += read_length;
+	}
+
+	send_response_with_payload_(RESPONSE_CHECKSUM, id, 4);
+
+	/* Inner CRC of flash data */
+	crc = crc32_final(crc);
+	uint8_t crc_buf[4];
+	write_le32(crc_buf, crc);
+	uart_write(crc_buf, sizeof(crc_buf));
+
+	/* Outer CRC of message */
+	crc = crc32_init();
+	crc = crc32_update(crc, crc_buf, sizeof(crc_buf));
+	crc = crc32_final(crc);
+	write_le32(crc_buf, crc);
+	uart_write(crc_buf, sizeof(crc_buf));
+}
+
 static const cmd_handler_t cmd_handlers[] = {
 	[UART_CMD_PING] = {
 		.call = call_ping_handler,
@@ -760,6 +807,10 @@ static const cmd_handler_t cmd_handlers[] = {
 	},
 	[UART_CMD_READ_FLASH] = {
 		.call = call_read_flash_handler,
+		.min_param_len = 8,
+	},
+	[UART_CMD_CHECKSUM] = {
+		.call = call_checksum_handler,
 		.min_param_len = 8,
 	},
 };
