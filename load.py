@@ -132,6 +132,13 @@ class RemoteFlashChecksumCommand(Command):
 	def __repr__(self):
 		return f"RemoteFlashChecksum(0x{self.start_address:08x}, {self.length})"
 
+class FlashInfoCommand(Command):
+	def __init__(self):
+		super().__init__(0x02)
+
+	def __repr__(self):
+		return f"FlashInfo()"
+
 class ResponseHeader():
 	LENGTH = 13
 
@@ -160,7 +167,8 @@ class Response():
 			ErrorResponse: ErrorResponse.RESPONSE_CODES,
 			SyncResponse: SyncResponse.RESPONSE_CODES,
 			DebugResponse: DebugResponse.RESPONSE_CODES,
-			ChecksumResponse: ChecksumResponse.RESPONSE_CODES
+			ChecksumResponse: ChecksumResponse.RESPONSE_CODES,
+			FlashInfoResponse: FlashInfoResponse.RESPONSE_CODES,
 		}
 		payload = b''
 		if data:
@@ -232,6 +240,20 @@ class ChecksumResponse(Response):
 
 	def __repr__(self):
 		return f"ChecksumResponse to 0x{self.header.id:04x}, checksum 0x{self.checksum:08x}"
+
+class FlashInfoResponse(Response):
+	RESPONSE_CODES = [ 0x0A ]
+
+	@classmethod
+	def validate(self, payload):
+		return len(payload) == 4
+
+	def __init__(self, header, payload):
+		super().__init__(header, payload)
+		self.flash_size_bytes = struct.unpack("<L", payload)[0]
+
+	def __repr__(self):
+		return f"FlashInfoResponse to 0x{self.header.id:04x}, flash size {self.flash_size_bytes} bytes"
 
 class LoaderSession():
 	SYNC_BYTE = 0xA5
@@ -377,6 +399,11 @@ class LoaderSession():
 		resp = self.await_response(dispatch)
 		return (resp and isinstance(resp, ChecksumResponse))
 
+	def flash_info(self):
+		cmd = FlashInfoCommand()
+		dispatch = self.send_command(cmd)
+		return self.await_response(dispatch)
+
 with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	while True:
 		byts = ser.read(1)
@@ -442,7 +469,9 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 
 	print(session.set_baudrate(115200 * 2))
 
-	print(session.remote_flash_checksum(0x0, 0x200000))
+	print(session.remote_flash_checksum(0x0, 0x100))
+
+	print(session.flash_info())
 
 #	sleep(1)
 	"""

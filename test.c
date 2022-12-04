@@ -43,6 +43,7 @@
 #define RESPONSE_ONLINE		0x07
 #define RESPONSE_FLASH_TIMEOUT	0x08
 #define RESPONSE_CHECKSUM	0x09
+#define RESPONSE_FLASH_INFO	0x0A
 
 #define TIMEOUT_HEADER		0x100000
 #define TIMEOUT_CMD		0x1000
@@ -74,6 +75,8 @@ typedef struct jedec_nor_flash_info {
 	uint8_t erase_opcode_4kib;
 	jedec_nor_flash_sector_t erase_sector_types[4];
 } jedec_nor_flash_info_t;
+
+static jedec_nor_flash_info_t flash_info_g = { 0 };
 
 static uint32_t read_le32(const void *data) {
 	const uint8_t *data8 = data;
@@ -639,6 +642,12 @@ static void call_set_baudrate_handler(const cmd_handler_t *handler, uint32_t id,
 	}
 }
 
+static void call_flash_info_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+	uint8_t flash_info_buf[4];
+	write_le32(flash_info_buf, flash_info_g.size_bytes);
+	send_response_with_payload(RESPONSE_FLASH_INFO, id, flash_info_buf, sizeof(flash_info_buf));
+}
+
 static void flash_write_enable(void) {
 	qspi_set_write_protect(false);
 
@@ -817,6 +826,10 @@ static const cmd_handler_t cmd_handlers[] = {
 		.call = call_set_baudrate_handler,
 		.min_param_len = 4,
 	},
+	[UART_CMD_FLASH_INFO] = {
+		.call = call_flash_info_handler,
+		.min_param_len = 0,
+	},
 	[UART_CMD_ERASE_SECTOR] = {
 		.call = call_erase_sector_handler,
 		.min_param_len = 4,
@@ -914,10 +927,9 @@ int main(void) {
 	asm("excp svc");
 	debug_puts("SVC call returned\r\n");
 
-	jedec_nor_flash_info_t flash_info = { 0 };
-	qspic_read_sfdp(&flash_info);
+	qspic_read_sfdp(&flash_info_g);
 	debug_puts("Flash size ");
-	debug_putlong(flash_info.size_bytes);
+	debug_putlong(flash_info_g.size_bytes);
 	debug_puts(" bytes\r\n");
 /*
 	QSPIC_CTRLBUS_REG = 0x09;
