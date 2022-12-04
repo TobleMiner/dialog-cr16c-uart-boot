@@ -3,6 +3,7 @@
 import serial
 import struct
 import sys
+import threading
 from time import sleep
 from zlib import crc32
 
@@ -12,37 +13,283 @@ SOH = 0x01
 ACK = 0x06
 NACK = 0x15
 
-HEADER_BYTE = 0xA5
-RESPONSE_DEBUG = 0x05
-
 payload = None
 with open(sys.argv[2], 'rb') as f:
 	payload = f.read()
 
 print(f"Will send {len(payload)} bytes to SC14441 bootloader")
 
-def receive_packet(ser):
-	header = ser.read(13)
-	if len(header) == 13:
-		(response, id, length, checksum) = struct.unpack("<BLLL", header)
-		checksum_check = crc32(b'\xA5' + header[:-4])
+class Command():
+	def __init__(self, cmd):
+		self.cmd = cmd
+
+	def get_payload(self):
+		return None
+
+	def expect_response(self):
+		return True
+
+	def encode(self, id):
+		payload = self.get_payload()
+		if not payload:
+			payload = b''
+		sync = LoaderSession.SYNC_BYTE.to_bytes(1, byteorder="little")
+		header = struct.pack("<BLL", self.cmd, id, len(payload))
+		data = sync + header + crc32(header).to_bytes(4, byteorder="little")
+#		print(f'CRC32 python {(header + crc32(header).to_bytes(4, byteorder="little")).hex()}')
+		if len(payload) > 0:
+			data += payload
+			data += crc32(payload).to_bytes(4, byteorder="little")
+#		print(f'Command data python {data.hex()}')
+		return data
+
+	def get_timeout(self, baudrate):
+		return 1
+
+class DispatchedCommand():
+	def __init__(self, cmd, id):
+		self.cmd = cmd
+		self.id = id
+
+	def encode(self):
+		return self.cmd.encode(self.id)
+
+	def __repr__(self):
+		return f"Dispatch, id: {self.id}, cmd: {str(self.cmd)}"
+
+class PingCommand(Command):
+	def __init__(self):
+		super().__init__(0x00)
+
+class ReadFlashCommand(Command):
+	def __init__(self, start_address, length):
+		super().__init__(0x06)
+		self.start_address = start_address
+		self.length = length
+
+	def get_payload(self):
+		return struct.pack("<LL", self.start_address, self.length)
+
+	def get_timeout(self, baudrate):
+		base = super().get_timeout(baudrate)
+		return base + 20 * self.length / (baudrate / 10)
+
+	def __repr__(self):
+		return f"ReadFlash(0x{self.start_address:08x}, {self.length})"
+
+class SetBaudrateCommand(Command):
+	def __init__(self, baudrate):
+		super().__init__(0x01)
+		self.baudrate = baudrate
+
+	def get_payload(self):
+		return struct.pack("<L", self.baudrate)
+
+class ResponseHeader():
+	LENGTH = 13
+
+	@staticmethod
+	def parse(data):
+		if len(data) != ResponseHeader.LENGTH:
+			return None
+		(response, id, length, checksum) = struct.unpack("<BLLL", data)
+		checksum_check = crc32(b'\xA5' + data[:-4])
 		if checksum != checksum_check:
+			print(data.hex())
 			print(f"Corrupted header, checksum incorrect (expected 0x{checksum_check:08x}, but got 0x{checksum:08x})")
-			return
-		if length:
-			payload = ser.read(length)
-			checksum_buf = ser.read(4)
-			if len(payload) == length and len(checksum_buf) == 4:
-				checksum = int.from_bytes(checksum_buf, byteorder='little')
-				checksum_check = crc32(payload)
-				if checksum != checksum_check:
-					print(f"Corrupted payload, checksum incorrect")
-					return
-				print(''.join(chr(b) for b in payload), end='')
+			return None
+		return ResponseHeader(response, id, length)
+
+	def __init__(self, response, id, payload_length):
+		self.response = response
+		self.id = id
+		self.payload_length = payload_length
+		self.payload_length_with_crc = payload_length + 4
+
+class Response():
+	@staticmethod
+	def parse(header, data):
+		RESPONSE_CODE_MAP = {
+			ErrorResponse: ErrorResponse.RESPONSE_CODES,
+			SyncResponse: SyncResponse.RESPONSE_CODES,
+			DebugResponse: DebugResponse.RESPONSE_CODES
+		}
+		payload = b''
+		if data:
+			if len(data) != header.payload_length_with_crc:
+				return None
+			payload = data[:-4]
+			checksum = int.from_bytes(data[-4:], byteorder='little')
+			checksum_check = crc32(payload)
+			if checksum != checksum_check:
+				print(f"Corrupted header, checksum incorrect (expected 0x{checksum_check:08x}, but got 0x{checksum:08x})")
+				print(payload)
+				return None
+
+		for (resp_type, response_codes) in RESPONSE_CODE_MAP.items():
+			if header.response in response_codes:
+				return resp_type(header, payload)
+
+		return Response(header, payload)
+
+	def handle(self):
+		return False
+
+	def __init__(self, header, payload):
+		self.header = header
+		self.payload = payload
+
+	def __repr__(self):
+		return f"Response to 0x{self.header.id:04x}, type 0x{self.header.response:02x}, {len(self.payload)} bytes of data"
+
+class ErrorResponse(Response):
+	RESPONSE_CODES = [ 0x00, 0x02, 0x03, 0x06 ]
+
+	def __init__(self, header, payload):
+		super().__init__(header, payload)
+
+class SyncResponse(Response):
+	RESPONSE_CODES = [ 0x01, 0x04 ]
+
+	def __init__(self, header, payload):
+		super().__init__(header, payload)
+
+class DebugResponse(Response):
+	RESPONSE_CODES = [ 0x05 ]
+
+	def __init__(self, header, payload):
+		super().__init__(header, payload)
+
+	def handle(self):
+		print(''.join(chr(b) for b in self.payload), end='')
+#		print('DEBUG: ' + ''.join(chr(b) for b in self.payload))
+		return True
+
+class LoaderSession():
+	SYNC_BYTE = 0xA5
+
+	def __init__(self, serial):
+		self.serial = serial
+		self.next_id = 0
+		self.queued_responses = [ ]
+		self.response_available = threading.Condition()
+		self.start()
+
+	def send_command(self, cmd):
+		dispatch = DispatchedCommand(cmd, self.next_id)
+		self.next_id += 1
+		print(f"Dispatching command {dispatch}")
+		self.serial.write(dispatch.encode())
+		return dispatch
+
+	def listen(self):
+		while not self.exit:
+			resp = self.receive_packet()
+			if not resp:
+				continue
+
+			if resp.handle():
+				continue
+
+			self.response_available.acquire()
+			print(resp)
+			self.queued_responses.append(resp)
+			self.response_available.notify_all()
+			self.response_available.release()
+
+	def receive_packet(self):
+		sync = self.serial.read(1)
+		if len(sync) == 0:
+			return None
+		if sync[0] == LoaderSession.SYNC_BYTE:
+			self.serial.timeout = 1
+			header_data = self.serial.read(ResponseHeader.LENGTH)
+			header = ResponseHeader.parse(header_data)
+			if not header:
+				return None
+			payload_with_crc = None
+			if header.payload_length:
+				self.serial.timeout = 1 + header.payload_length_with_crc * 10 / self.serial.baudrate
+				payload_with_crc = self.serial.read(header.payload_length_with_crc)
+			return Response.parse(header, payload_with_crc)
+
+	def find_response(self, id):
+		for resp in self.queued_responses:
+			if resp.header.id == id:
+				return resp
+		return None
+
+	def await_response(self, dispatch, timeout=False):
+		if isinstance(timeout, bool) and timeout == False:
+			timeout = dispatch.cmd.get_timeout(self.serial.baudrate)
+
+		self.response_available.acquire()
+		resp = self.find_response(dispatch.id)
+		if resp:
+			self.queued_responses.remove(resp)
+			self.response_available.release()
+			return resp
+
+		print(f"Timeout: {timeout}s")
+		while self.response_available.wait(timeout):
+			resp = self.find_response(dispatch.id)
+			if resp:
+				self.queued_responses.remove(resp)
+				return resp
+
+		return None
+
+	def start(self):
+		self.exit = False
+		self.listen_thread = threading.Thread(target=self.listen)
+		self.listen_thread.start()
+
+	def stop(self):
+		self.exit = True
+		self.listen_thread.join()
+
+	def read_flash_chunk(self, start, length):
+		cmd = ReadFlashCommand(start, length)
+		dispatch = self.send_command(cmd)
+		resp = self.await_response(dispatch)
+		if resp and isinstance(resp, SyncResponse):
+			return resp.payload
+		return None
+
+	def read_flash(self, start, length, retry=5, chunk_size=4096):
+		address = start
+		data = b''
+		while length:
+			read_size = length
+			if read_size > chunk_size:
+				read_size = chunk_size
+			for try_ in range(retry):
+				chunk = self.read_flash_chunk(address, read_size)
+				if chunk:
+					data += chunk
+					break
+				print(f"Failed to read chunk at 0x{address:08x}, try {try_ + 1}/{retry}")
 			else:
-				print(f"Incomplete payload, {len(payload)+ len(checksum_buf)} bytes")
-	else:
-		print(f"Incomplete header, {len(header)} bytes")
+				return None
+
+			length -= read_size
+			address += read_size
+
+		return data
+
+	def set_baudrate(self, baudrate, connect_retry=5):
+		cmd = SetBaudrateCommand(baudrate)
+		self.send_command(cmd)
+		self.stop()
+		self.serial.baudrate = baudrate
+		self.queued_responses.clear()
+		self.start()
+		for _ in range(connect_retry):
+			dispatch = self.send_command(PingCommand())
+			if session.await_response(dispatch):
+				return True
+
+		return False
 
 with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	while True:
@@ -96,20 +343,27 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 		print("Response checksum incorrect, aborting")
 		sys.exit(1)
 
-	checksum = crc32(b'\xff\x42')
-	print(checksum);
-	print(f"CRC32: 0x{checksum:08x}")
+	session = LoaderSession(ser)
+#	session.attach()
+	dispatch = session.send_command(PingCommand())
+	print(session.await_response(dispatch))
 
-	ser.timeout = 1
-	while True:
-		hdr = ser.read(1)
-		if len(hdr) == 1:
-			if hdr[0] == HEADER_BYTE:
-				receive_packet(ser)
-			else:
-				print("Unexpected header byte 0x{hdr[0]:02x}")
-"""
-		data = ser.read(32)
-		if len(data):
-			print(''.join(chr(b) for b in data), end='')
-"""
+	dispatch = session.send_command(PingCommand())
+	print(session.await_response(dispatch))
+
+	dispatch = session.send_command(PingCommand())
+	print(session.await_response(dispatch))
+
+	print(session.set_baudrate(115200 * 2))
+
+#	sleep(1)
+
+	with open("flash_readback.bin", "wb") as f:
+		flash_data = session.read_flash(0x0, 0x200000)
+		f.write(flash_data)
+	print("Flash read done")
+
+	sleep(5)
+
+	session.stop()
+

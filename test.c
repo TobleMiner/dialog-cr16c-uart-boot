@@ -30,6 +30,7 @@
 #define UART_CMD_ERASE_SECTOR	0x03
 #define UART_CMD_PROGRAM_PAGE	0x04
 #define UART_CMD_RESET		0x05
+#define UART_CMD_READ_FLASH	0x06
 
 #define RESPONSE_INVALID_CRC	0x00
 #define RESPONSE_CMD_OK		0x01
@@ -37,6 +38,8 @@
 #define RESPONSE_PARAM_SHORT	0x03
 #define RESPONSE_OK		0x04
 #define RESPONSE_DEBUG		0x05
+#define RESPONSE_INVALID_PARAM	0x06
+#define RESPONSE_ONLINE		0x07
 
 #define TIMEOUT_HEADER		0x100000
 #define TIMEOUT_CMD		0x1000
@@ -100,22 +103,8 @@ static void send_response_with_payload(uint8_t response, uint32_t id, const void
 	uart_write(crc_buf, sizeof(crc_buf));
 }
 
-static void send_response(uint8_t response, uint32_t id) {
-	send_response_with_payload_(response, id, 0);
-}
-
 static void debug_puts(const char *ptr) {
 	send_response_with_payload(RESPONSE_DEBUG, 0xFFFFFFFF, ptr, strlen(ptr));
-}
-
-#define NIBBLE_TO_HEX_CHAR(i) ((i) < 10 ? '0' + (i) : 'A' + ((i) - 10))
-
-static void debug_putbyte_hex(unsigned char byt) {
-	char str[3];
-	str[0] = NIBBLE_TO_HEX_CHAR((byt >> 4) & 0xf);
-	str[1] = NIBBLE_TO_HEX_CHAR(byt & 0xf);
-	str[2] = 0;
-	debug_puts(str);
 }
 
 static void debug_putint(unsigned int val) {
@@ -150,6 +139,27 @@ static void debug_putlong(unsigned long val) {
 	debug_puts(ptr);
 }
 
+#define NIBBLE_TO_HEX_CHAR(i) ((i) < 10 ? '0' + (i) : 'A' + ((i) - 10))
+
+static void debug_putbyte_hex(unsigned char byt) {
+	char str[3];
+	str[0] = NIBBLE_TO_HEX_CHAR((byt >> 4) & 0xf);
+	str[1] = NIBBLE_TO_HEX_CHAR(byt & 0xf);
+	str[2] = 0;
+	debug_puts(str);
+}
+
+static void send_response(uint8_t response, uint32_t id) {
+	send_response_with_payload_(response, id, 0);
+/*
+	debug_puts("Short response to ");
+	debug_putlong(id);
+	debug_puts(" sent, code 0x");
+	debug_putbyte_hex(response);
+	debug_puts("\r\n");
+*/
+}
+
 static void debug_putint_hex(unsigned int i) {
 	debug_putbyte_hex(i >> 8);
 	debug_putbyte_hex(i & 0xff);
@@ -160,9 +170,9 @@ static void debug_putlong_hex(unsigned long i) {
 	debug_putint_hex(i & 0xffff);
 }
 
-static void debug_hexdump(void *ptr, unsigned int len) {
+static void debug_hexdump(const void *ptr, unsigned int len) {
 	send_response_with_payload_(RESPONSE_DEBUG, 0xFFFFFFFF, len * 2);
-	uint8_t *ptr8 = ptr;
+	const uint8_t *ptr8 = ptr;
 	uint32_t crc = crc32_init();
 	while (len--) {
 		uint8_t byt = *ptr8++;
@@ -231,11 +241,11 @@ static unsigned int uart_rx_read_ptr = 0;
 
 static unsigned int uart_rx_buffered_data(void) {
 	unsigned int data_in_transit = DMAX_IDX_REG(DMA_UART_RX);
-	unsigned int effective_rx_data_ptr = uart_rx_read_ptr + data_in_transit;
-	if (effective_rx_data_ptr > uart_rx_dma_ptr) {
-		return effective_rx_data_ptr - uart_rx_dma_ptr;
+	unsigned int effective_rx_dma_ptr = uart_rx_dma_ptr + data_in_transit;
+	if (effective_rx_dma_ptr >= uart_rx_read_ptr) {
+		return effective_rx_dma_ptr - uart_rx_read_ptr;
 	} else {
-		return sizeof(uart_rx_buf) - uart_rx_dma_ptr + effective_rx_data_ptr;
+		return sizeof(uart_rx_buf) - uart_rx_read_ptr + effective_rx_dma_ptr;
 	}
 }
 
@@ -516,8 +526,6 @@ static void qspic_read_sfdp(jedec_nor_flash_info_t *flash_info) {
 
 #define FUNCTION_ADDRESS(funcptr_) (((intptr_t)funcptr_) << 1)
 
-extern void real_vector_table;
-
 static void start_uart_rx_dma(void *ptr, unsigned int len) {
 	DMAX_A_STARTL_REG(DMA_UART_RX) = (uint16_t)(uintptr_t)&UART_RX_TX_REG;
 	DMAX_A_STARTH_REG(DMA_UART_RX) = (uint16_t)((uint32_t)&UART_RX_TX_REG >> 16);
@@ -549,19 +557,102 @@ static void call_reset_handler(const cmd_handler_t *handler, uint32_t id, const 
 	system_reset();
 }
 
+static void call_set_baudrate_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+	uint32_t baudrate = read_le32(param_data);
+	switch (baudrate) {
+	case 9600:
+		uart_set_baudrate(9600);
+		break;
+	case 19200:
+		uart_set_baudrate(19200);
+		break;
+	case 57600:
+		uart_set_baudrate(57600);
+		break;
+	case 115200:
+		uart_set_baudrate(115200);
+		break;
+	case 230400:
+		uart_set_baudrate(230400);
+		break;
+	default:
+		send_response(RESPONSE_INVALID_PARAM, id);
+		break;
+	}
+}
+
+static uint8_t flash_read_buffer[256];
+static void call_read_flash_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+	const uint8_t *param8 = param_data;
+	uint32_t start_address = read_le32(&param8[0]);
+	uint32_t length = read_le32(&param8[4]);
+
+/*
+	debug_puts("Reading ");
+	debug_putlong(length);
+	debug_puts(" bytes from flash at 0x");
+	debug_putlong_hex(start_address);
+	debug_puts("\r\n");
+*/
+	send_response_with_payload_(RESPONSE_OK, id, length);
+
+	uint32_t crc = crc32_init();
+	while (length) {
+		uint32_t read_length = length;
+		if (read_length > sizeof(flash_read_buffer)) {
+			read_length = sizeof(flash_read_buffer);
+		}
+
+		uint8_t read_flash_cmd[] = { 0x03, (start_address >> 16) & 0xff, (start_address >> 8) & 0xff, start_address & 0xff };
+		qspi_xfer_desc_t desc = {
+			.mode = QSPI_MODE_SIO,
+			.tx_data = read_flash_cmd,
+			.tx_len = sizeof(read_flash_cmd),
+			.dummy_cycles_after_tx = 0,
+			.rx_data = flash_read_buffer,
+			.rx_len = read_length
+		};
+		qspi_write_then_read(&desc);
+		crc = crc32_update(crc, flash_read_buffer, read_length);
+		uart_write(flash_read_buffer, read_length);
+
+		length -= read_length;
+		start_address += read_length;
+	}
+
+	crc = crc32_final(crc);
+	uint8_t crc_buf[4];
+	write_le32(crc_buf, crc);
+	uart_write(crc_buf, sizeof(crc_buf));
+
+/*
+	debug_puts("Read done, CRC embedded 0x");
+	debug_putlong_hex(crc);
+	debug_puts("\r\n");
+*/
+}
+
 static const cmd_handler_t cmd_handlers[] = {
 	[UART_CMD_PING] = {
 		.call = call_ping_handler,
 		.min_param_len = 0,
 	},
+	[UART_CMD_SET_BAUDRATE] = {
+		.call = call_set_baudrate_handler,
+		.min_param_len = 4,
+	},
 	[UART_CMD_RESET] = {
 		.call = call_reset_handler,
 		.min_param_len = 0,
 	},
+	[UART_CMD_READ_FLASH] = {
+		.call = call_read_flash_handler,
+		.min_param_len = 8,
+	},
 };
 
 static void dispatch_cmd(const cmd_handler_t *handler, uint32_t id, const void *parameter_data, uint32_t parameter_len) {
-
+	handler->call(handler, id, parameter_data, parameter_len);
 }
 
 int main(void) {
@@ -578,6 +669,7 @@ int main(void) {
 
 	reset_uart_rx_dma();
 
+/*
 	uint8_t data[] = { 0xff, 0x42 };
 	uint32_t crc32 = crc32_init();
 	crc32 = crc32_update(crc32, data, sizeof(data));
@@ -605,7 +697,7 @@ int main(void) {
 		debug_putlong_hex((unsigned long)vectors[i]);
 		debug_puts("\r\n");
 	}
-
+*/
 
 //	P0_DIR_REG |= 0x0c;
 //	P0_DATA_REG &= ~0x02;
@@ -692,6 +784,10 @@ int main(void) {
 	DMAX_LEN_REG(DMA_UART_TX) = strlen(dma_test_string);
 	DMAX_CTRL_REG(DMA_UART_TX) |= DMAX_CTRL_REG_DMA_ON;
 */
+	for (int i = 0; i < 3; i++) {
+		send_response(RESPONSE_ONLINE, 0xFFFFFFFF);
+	}
+
 	cmd_state_t cmd_state = CMD_STATE_WAIT_HEADER;
 	uint32_t parameter_len;
 	uint32_t id;
@@ -711,47 +807,98 @@ int main(void) {
 		if (cmd_state == CMD_STATE_WAIT_CMD) {
 			unsigned int data_len = uart_rx_buffered_data();
 			if (data_len >= 13) {
+//				asm volatile("cinv [d,i]");
+//				for (volatile unsigned int i = 0; i < 1000; i++);
+//				DMAX_CTRL_REG(DMA_UART_RX) &= ~DMAX_CTRL_REG_DMA_ON;
+//				while (DMAX_CTRL_REG(DMA_UART_RX) & DMAX_CTRL_REG_DMA_ON);
 				uint8_t *hdr = uart_get_read_ptr();
 				uart_advance_read_ptr(13);
 				uint8_t cmd = hdr[0];
 				id = read_le32(&hdr[1]);
 				parameter_len = read_le32(&hdr[5]);
-				uint32_t crc = read_le32(&hdr[9]);
 				uint32_t crc_check = crc32_init();
-				crc_check = crc32_update(crc_check, hdr, sizeof(hdr));
+				crc_check = crc32_update(crc_check, hdr, 9);
 				crc_check = crc32_final(crc_check);
-
+				uint32_t crc = read_le32(&hdr[9]);
+//				DMAX_CTRL_REG(DMA_UART_RX) |= DMAX_CTRL_REG_DMA_ON;
+/*
+				debug_puts("CRC32 embedded ");
+				debug_hexdump(hdr, 13);
+				debug_puts("\r\n");
+*/
 				if (crc_check == crc) {
 					if (cmd < ARRAY_SIZE(cmd_handlers)) {
 						current_handler = &cmd_handlers[cmd];
 						if (parameter_len >= current_handler->min_param_len) {
 							timeout = TIMEOUT_PARAM;
 							cmd_state = CMD_STATE_WAIT_PARAM;
-							send_response(RESPONSE_CMD_OK, id);
 						} else {
 							timeout = TIMEOUT_HEADER;
 							cmd_state = CMD_STATE_WAIT_HEADER;
 							send_response(RESPONSE_PARAM_SHORT, id);
+							reset_uart_rx_dma();
 						}
 					} else {
 						timeout = TIMEOUT_HEADER;
 						cmd_state = CMD_STATE_WAIT_HEADER;
 						send_response(RESPONSE_CMD_INVALID, id);
+						reset_uart_rx_dma();
 					}
 				} else {
+					debug_puts("Invalid CRC32 on header ");
+					debug_hexdump(hdr, 13);
+					debug_puts("\r\n");
+					debug_puts("Expected 0x");
+					debug_putlong_hex(crc_check);
+					debug_puts(" but received 0x");
+					debug_putlong_hex(crc);
+					debug_puts("\r\n");
 					timeout = TIMEOUT_HEADER;
 					cmd_state = CMD_STATE_WAIT_HEADER;
 					send_response(RESPONSE_INVALID_CRC, id);
+					reset_uart_rx_dma();
 				}
 			}
 		}
 
 		if (cmd_state == CMD_STATE_WAIT_PARAM) {
-			unsigned int data_len = uart_rx_buffered_data();
-			if (data_len >= parameter_len) {
-				const void *read_ptr = uart_get_read_ptr();
-				uart_advance_read_ptr(parameter_len);
-				dispatch_cmd(current_handler, id, read_ptr, parameter_len);
+			if (parameter_len) {
+				unsigned int data_len = uart_rx_buffered_data();
+				if (data_len >= parameter_len + 4) {
+	//				asm volatile("cinv [d,i]");
+	//				for (volatile unsigned int i = 0; i < 1000; i++);
+	//				DMAX_CTRL_REG(DMA_UART_RX) &= ~DMAX_CTRL_REG_DMA_ON;
+	//				while (DMAX_CTRL_REG(DMA_UART_RX) & DMAX_CTRL_REG_DMA_ON);
+					const uint8_t *read_ptr = uart_get_read_ptr();
+					uart_advance_read_ptr(parameter_len + 4);
+					uint32_t crc_check = crc32_init();
+					crc_check = crc32_update(crc_check, read_ptr, parameter_len);
+					crc_check = crc32_final(crc_check);
+					uint32_t crc = read_le32(&read_ptr[parameter_len]);
+	//				DMAX_CTRL_REG(DMA_UART_RX) |= DMAX_CTRL_REG_DMA_ON;
+					if (crc_check == crc) {
+						dispatch_cmd(current_handler, id, read_ptr, parameter_len);
+						reset_uart_rx_dma();
+						cmd_state = CMD_STATE_WAIT_HEADER;
+						timeout = TIMEOUT_HEADER;
+					} else {
+						debug_puts("Invalid CRC32 on params ");
+						debug_hexdump(read_ptr, parameter_len + 4);
+						debug_puts("\r\n");
+						debug_puts("Expected 0x");
+						debug_putlong_hex(crc_check);
+						debug_puts(" but received 0x");
+						debug_putlong_hex(crc);
+						debug_puts("\r\n");
+						timeout = TIMEOUT_HEADER;
+						cmd_state = CMD_STATE_WAIT_HEADER;
+						send_response(RESPONSE_INVALID_CRC, id);
+						reset_uart_rx_dma();
+					}
+				}
+			} else {
+				dispatch_cmd(current_handler, id, NULL, 0);
+				reset_uart_rx_dma();
 				cmd_state = CMD_STATE_WAIT_HEADER;
 				timeout = TIMEOUT_HEADER;
 			}
@@ -830,3 +977,4 @@ int main(void) {
 //		for (volatile unsigned int i = 0; i < 10000; i++);
 	}
 }
+

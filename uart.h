@@ -23,6 +23,7 @@
 #define UART_CLEAR_RX_INT_REG MMIO16(0xFF4906)
 
 void uart_init(void);
+void uart_set_baudrate(unsigned long baudrate);
 void uart_putc(char c);
 void uart_puts(const char *str);
 void uart_putbyte_hex(unsigned char byt);
@@ -33,4 +34,3 @@ void uart_putint_hex(unsigned int i);
 void uart_putlong_hex(unsigned long i);
 void uart_putnewline(void);
 void uart_write(const void *ptr, unsigned int len);
-

@@ -19,6 +19,32 @@ void uart_init(void) {
 */
 }
 
+void uart_set_baudrate(unsigned long baudrate) {
+	unsigned int uart_enable = UART_CTRL_REG & (UART_CTRL_REG_UART_TEN | UART_CTRL_REG_UART_REN);
+	UART_CTRL_REG &= ~(UART_CTRL_REG_UART_TEN | UART_CTRL_REG_UART_REN);
+	unsigned int uart_ctrl = UART_CTRL_REG;
+	uart_ctrl &= ~UART_CTRL_REG_BAUDRATE_MASK;
+	switch (baudrate) {
+	case 9600UL:
+		uart_ctrl |= UART_CTRL_REG_BAUDRATE_9600;
+		break;
+	case 19200UL:
+		uart_ctrl |= UART_CTRL_REG_BAUDRATE_19200;
+		break;
+	case 57600UL:
+		uart_ctrl |= UART_CTRL_REG_BAUDRATE_57600;
+		break;
+	case 115200UL:
+		uart_ctrl |= UART_CTRL_REG_BAUDRATE_115200;
+		break;
+	case 230400UL:
+		uart_ctrl |= UART_CTRL_REG_BAUDRATE_230400;
+		break;
+	}
+	UART_CTRL_REG = uart_ctrl;
+	UART_CTRL_REG |= uart_enable;
+}
+
 void uart_putc(char c) {
 	UART_RX_TX_REG = c;
 	while (!(UART_CTRL_REG & UART_CTRL_REG_TI));
