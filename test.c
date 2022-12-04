@@ -64,8 +64,15 @@ struct cmd_handler {
 	unsigned int min_param_len;
 };
 
+typedef struct jedec_nor_flash_sector {
+	uint8_t erase_opcode;
+	uint8_t size_exponent;
+} jedec_nor_flash_sector_t;
+
 typedef struct jedec_nor_flash_info {
 	uint32_t size_bytes;
+	uint8_t erase_opcode_4kib;
+	jedec_nor_flash_sector_t erase_sector_types[4];
 } jedec_nor_flash_info_t;
 
 static uint32_t read_le32(const void *data) {
@@ -440,8 +447,44 @@ vector_table_t vector_table = {
 	.uart_ti_int = uart_tx_int,
 };
 
-static const uint8_t sfdp_read_header_cmd[] = { JEDEC_CMD_RDSFDP, 0x00, 0x00, 0x00 };
+static void qspic_read_erase_sector_size(uint8_t sector_desc[2], jedec_nor_flash_sector_t *sector_info) {
+	sector_info->size_exponent = sector_desc[0];
+	sector_info->erase_opcode = sector_desc[1];
+	if (sector_info->size_exponent != 0xff) {
+		debug_puts("Sector size 2^");
+		debug_putint(sector_info->size_exponent);
+		debug_puts(" erase opcode is 0x");
+		debug_putbyte_hex(sector_info->erase_opcode);
+		debug_puts("\r\n");
+	}
+}
 
+static void qspic_read_parameter_table_0(uint8_t parameter_table[64], jedec_nor_flash_info_t *flash_info) {
+	flash_info->erase_opcode_4kib = parameter_table[2];
+	debug_puts("4KiB erase opcode 0x");
+	debug_putbyte_hex(flash_info->erase_opcode_4kib);
+	debug_puts("\r\n");
+
+	uint32_t raw_size = (uint32_t)parameter_table[4] |
+			    (uint32_t)parameter_table[5] << 8 |
+			    (uint32_t)parameter_table[6] << 16 |
+			    (uint32_t)parameter_table[7] << 24;
+
+	debug_puts("Raw flash size 0x");
+	debug_putlong_hex(raw_size);
+	debug_puts("\r\n");
+	if (raw_size & (1L << 31)) {
+		flash_info->size_bytes = (1 << raw_size) / 8UL;
+	} else {
+		flash_info->size_bytes = (raw_size + 1) / 8UL;
+	}
+
+	for (int i = 0; i < 4; i++) {
+		qspic_read_erase_sector_size(&parameter_table[7 * 4 + i / 2], &flash_info->erase_sector_types[i]);
+	}
+}
+
+static const uint8_t sfdp_read_header_cmd[] = { JEDEC_CMD_RDSFDP, 0x00, 0x00, 0x00 };
 static void qspic_read_parameter_table(uint8_t *parameter_header, jedec_nor_flash_info_t *flash_info) {
 	uint8_t parameter_table[64];
 	unsigned int table_len = (unsigned int)parameter_header[3] * 4;
@@ -470,19 +513,7 @@ static void qspic_read_parameter_table(uint8_t *parameter_header, jedec_nor_flas
 	debug_puts("\r\n");
 
 	if (table_type == 0x00) {
-		uint32_t raw_size = (uint32_t)parameter_table[4] |
-				    (uint32_t)parameter_table[5] << 8 |
-				    (uint32_t)parameter_table[6] << 16 |
-				    (uint32_t)parameter_table[7] << 24;
-
-		debug_puts("Raw flash size 0x");
-		debug_putlong_hex(raw_size);
-		debug_puts("\r\n");
-		if (raw_size & (1L << 31)) {
-			flash_info->size_bytes = (1 << raw_size) / 8UL;
-		} else {
-			flash_info->size_bytes = (raw_size + 1) / 8UL;
-		}
+		qspic_read_parameter_table_0(parameter_table, flash_info);
 	}
 }
 
