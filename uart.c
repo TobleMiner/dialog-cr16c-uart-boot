@@ -1,5 +1,7 @@
 #include "uart.h"
 
+#include <stddef.h>
+
 #include "gpio.h"
 #include "irq.h"
 #include "watchdog.h"
@@ -19,28 +21,41 @@ void uart_init(void) {
 */
 }
 
+typedef struct uart_baudrate_config {
+	unsigned long baudrate;
+	unsigned int uart_ctrl;
+} uart_baudrate_config_t;
+
+static const uart_baudrate_config_t supported_baudrates[] = {
+	{ 9600UL, UART_CTRL_REG_BAUDRATE_9600 },
+	{ 19200UL, UART_CTRL_REG_BAUDRATE_19200 },
+	{ 57600UL, UART_CTRL_REG_BAUDRATE_57600 },
+	{ 115200UL, UART_CTRL_REG_BAUDRATE_115200 },
+	{ 230400UL, UART_CTRL_REG_BAUDRATE_230400 },
+};
+
+static const uart_baudrate_config_t *get_config_for_baudrate(unsigned long baudrate) {
+	for (unsigned int i = 0; i < ARRAY_SIZE(supported_baudrates); i++) {
+		const uart_baudrate_config_t *cfg = &supported_baudrates[i];
+		if (cfg->baudrate == baudrate) {
+			return cfg;
+		}
+	}
+
+	return NULL;
+}
+
+bool uart_is_baudrate_attainable(unsigned long baudrate) {
+	return !!get_config_for_baudrate(baudrate);
+}
+
 void uart_set_baudrate(unsigned long baudrate) {
+	const uart_baudrate_config_t *cfg = get_config_for_baudrate(baudrate);
 	unsigned int uart_enable = UART_CTRL_REG & (UART_CTRL_REG_UART_TEN | UART_CTRL_REG_UART_REN);
 	UART_CTRL_REG &= ~(UART_CTRL_REG_UART_TEN | UART_CTRL_REG_UART_REN);
 	unsigned int uart_ctrl = UART_CTRL_REG;
 	uart_ctrl &= ~UART_CTRL_REG_BAUDRATE_MASK;
-	switch (baudrate) {
-	case 9600UL:
-		uart_ctrl |= UART_CTRL_REG_BAUDRATE_9600;
-		break;
-	case 19200UL:
-		uart_ctrl |= UART_CTRL_REG_BAUDRATE_19200;
-		break;
-	case 57600UL:
-		uart_ctrl |= UART_CTRL_REG_BAUDRATE_57600;
-		break;
-	case 115200UL:
-		uart_ctrl |= UART_CTRL_REG_BAUDRATE_115200;
-		break;
-	case 230400UL:
-		uart_ctrl |= UART_CTRL_REG_BAUDRATE_230400;
-		break;
-	}
+	uart_ctrl |= cfg->uart_ctrl;
 	UART_CTRL_REG = uart_ctrl;
 	UART_CTRL_REG |= uart_enable;
 }
@@ -128,4 +143,10 @@ void uart_write(const void *ptr, unsigned int len) {
 		watchdog_reset();
 		uart_putc((char)*ptr8++);
 	}
+}
+
+void uart_flush() {
+	// TODO: determine if we can somehow check state of UART
+	// data output shift register
+	for (volatile int i = 0; i < 100; i++);
 }

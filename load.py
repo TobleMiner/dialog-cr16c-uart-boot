@@ -369,7 +369,10 @@ class LoaderSession():
 
 	def set_baudrate(self, baudrate, connect_retry=5):
 		cmd = SetBaudrateCommand(baudrate)
-		self.send_command(cmd)
+		dispatch = self.send_command(cmd)
+		resp = self.await_response(dispatch)
+		if resp and isinstance(resp, ErrorResponse):
+			return False
 		self.stop()
 		self.serial.baudrate = baudrate
 		self.queued_responses.clear()

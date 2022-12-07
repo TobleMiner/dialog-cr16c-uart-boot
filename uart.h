@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "util.h"
 
 #define UART_CTRL_REG			MMIO16(0xFF4900)
@@ -23,6 +25,7 @@
 #define UART_CLEAR_RX_INT_REG MMIO16(0xFF4906)
 
 void uart_init(void);
+bool uart_is_baudrate_attainable(unsigned long baudrate);
 void uart_set_baudrate(unsigned long baudrate);
 void uart_putc(char c);
 void uart_puts(const char *str);
@@ -34,3 +37,4 @@ void uart_putint_hex(unsigned int i);
 void uart_putlong_hex(unsigned long i);
 void uart_putnewline(void);
 void uart_write(const void *ptr, unsigned int len);
+void uart_flush(void);

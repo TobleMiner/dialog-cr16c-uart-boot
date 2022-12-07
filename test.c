@@ -399,7 +399,6 @@ static void uart_write(const void *ptr, unsigned int len) {
 static void uart_write_string(const char *str) {
 	uart_write(str, strlen(str));
 }
-*/
 
 static void uart_flush(void) {
 	disable_interrupts();
@@ -417,7 +416,6 @@ static void uart_flush(void) {
 	}
 }
 
-/*
 static void uart_read(void *ptr, unsigned int len) {
 	uart_rx_irq_flag = false;
 	DMAX_A_STARTL_REG(DMA_UART_RX) = (uint16_t)(uintptr_t)&UART_RX_TX_REG;
@@ -620,25 +618,13 @@ static void call_ping_handler(const cmd_handler_t *handler, uint32_t id, const v
 
 static void call_set_baudrate_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
 	uint32_t baudrate = read_le32(param_data);
-	switch (baudrate) {
-	case 9600:
+	if (uart_is_baudrate_attainable(baudrate)) {
+		send_response(RESPONSE_OK, id);
+		uart_flush();
 		uart_set_baudrate(9600);
-		break;
-	case 19200:
-		uart_set_baudrate(19200);
-		break;
-	case 57600:
-		uart_set_baudrate(57600);
-		break;
-	case 115200:
-		uart_set_baudrate(115200);
-		break;
-	case 230400:
-		uart_set_baudrate(230400);
-		break;
-	default:
+
+	} else {
 		send_response(RESPONSE_INVALID_PARAM, id);
-		break;
 	}
 }
 
