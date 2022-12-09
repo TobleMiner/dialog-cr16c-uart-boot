@@ -3,7 +3,7 @@
 bootloader_entry:
 	/* Setup user stack */
 	movd $__ustack, (sp)
-	/* Setup exception steack */
+	/* Setup exception stack */
 	movd $__istack, (r1, r0)
 	lprd (r1, r0), isp
 	/* Fixup exception handlers, need to be shifted right by 1 bit */

@@ -1119,68 +1119,8 @@ int main(void) {
 		}
 	}
 
-	for (unsigned int i = 0; i < 20; i++) {
-//		SET_INT_PENDING_REG = RESET_INT_PENDING_REG_UART_RI_INT_PEND;
-		unsigned int num_irqs;
-		asm("di");
-		num_irqs = num_rx_interrupts;
-		asm("ei");
-/*
-		uart_puts("Got ");
-		uart_putint(num_irqs);
-		uart_puts(" RX irqs\r\n");
-*/
-//		uart_write_string("Hello World!\r\n");
-
-		for (volatile unsigned int j = 0; j < 2000; j++) {
-			if (uart_data_available()) {
-				uint8_t datum = uart_read_byte();
-				uart_putc((char)datum);
-			}
-		}
-
-		watchdog_reset();
-	}
-
-	uart_puts("                                                                   \r\n");
-	uart_puts("\r\n\r\nDMA complete\r\n");
-	uart_puts("Got ");
-	uart_putint(num_rx_interrupts);
-	uart_puts(" RX irqs\r\n");
-//	uart_flush();
-
-	uart_puts("Last DMA len ");
-	uart_putint(DMAX_IDX_REG(DMA_UART_RX));
-	uart_puts(" bytes\r\n");
-/*
-	uart_puts("DMA data:\r\n");
-	uart_hexdump(rx_data, sizeof(rx_data));
-	uart_puts("\r\n");
-*/
-
 	system_reset();
 
-	while (1) {
-		watchdog_reset();
-/*
-	while (1) {
-		UART_RX_TX_REG = 0x42;
-		while (!(UART_CTRL_REG & UART_CTRL_REG_TI)) {
-			if (UART_CTRL_REG & UART_CTRL_REG_RI) {
-				UART_CLEAR_RX_INT_REG = 1;
-			}
-		}
-		UART_CLEAR_TX_INT_REG = 1;
-	}
-*/
-		uart_puts("Hello World!\r\n");
-		for (volatile unsigned int i = 0; i < 10000; i++);
-/*
-		P0_SET_DATA_REG = 1;
-		for (volatile unsigned int i = 0; i < 10000; i++);
-		P0_RESET_DATA_REG = 1;
-*/
-//		for (volatile unsigned int i = 0; i < 10000; i++);
-	}
+	while (1) { }
 }
 
