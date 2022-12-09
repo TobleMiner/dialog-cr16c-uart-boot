@@ -621,7 +621,7 @@ static void call_set_baudrate_handler(const cmd_handler_t *handler, uint32_t id,
 	if (uart_is_baudrate_attainable(baudrate)) {
 		send_response(RESPONSE_OK, id);
 		uart_flush();
-		uart_set_baudrate(9600);
+		uart_set_baudrate(baudrate);
 
 	} else {
 		send_response(RESPONSE_INVALID_PARAM, id);
