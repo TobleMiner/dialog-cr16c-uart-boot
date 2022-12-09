@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "chipid.h"
 #include "clock.h"
 #include "crc32.h"
 #include "dma.h"
@@ -32,6 +33,7 @@
 #define UART_CMD_RESET		0x05
 #define UART_CMD_READ_FLASH	0x06
 #define UART_CMD_CHECKSUM	0x07
+#define UART_CMD_CHIPID		0x08
 
 #define RESPONSE_INVALID_CRC	0x00
 #define RESPONSE_CMD_OK		0x01
@@ -44,6 +46,7 @@
 #define RESPONSE_FLASH_TIMEOUT	0x08
 #define RESPONSE_CHECKSUM	0x09
 #define RESPONSE_FLASH_INFO	0x0A
+#define RESPONSE_CHIPID		0x0B
 
 #define TIMEOUT_HEADER		0x100000
 #define TIMEOUT_CMD		0x1000
@@ -803,6 +806,19 @@ static void call_checksum_handler(const cmd_handler_t *handler, uint32_t id, con
 	send_response_with_payload(RESPONSE_CHECKSUM, id, crc_buf, sizeof(crc_buf));
 }
 
+static void call_chipid_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+	chipid_t chipid;
+	chipid_read(&chipid);
+	uint8_t chipid_buf[] = {
+		chipid.id1,
+		chipid.id2,
+		chipid.id3,
+		chipid.mem_size,
+		chipid.revision
+	};
+	send_response_with_payload(RESPONSE_CHIPID, id, chipid_buf, sizeof(chipid_buf));
+}
+
 static const cmd_handler_t cmd_handlers[] = {
 	[UART_CMD_PING] = {
 		.call = call_ping_handler,
@@ -835,6 +851,10 @@ static const cmd_handler_t cmd_handlers[] = {
 	[UART_CMD_CHECKSUM] = {
 		.call = call_checksum_handler,
 		.min_param_len = 8,
+	},
+	[UART_CMD_CHIPID] = {
+		.call = call_chipid_handler,
+		.min_param_len = 0,
 	},
 };
 

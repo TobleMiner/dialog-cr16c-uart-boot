@@ -139,6 +139,13 @@ class FlashInfoCommand(Command):
 	def __repr__(self):
 		return f"FlashInfo()"
 
+class ChipIdCommand(Command):
+	def __init__(self):
+		super().__init__(0x08)
+
+	def __repr__(self):
+		return f"ChipId()"
+
 class ResponseHeader():
 	LENGTH = 13
 
@@ -169,6 +176,7 @@ class Response():
 			DebugResponse: DebugResponse.RESPONSE_CODES,
 			ChecksumResponse: ChecksumResponse.RESPONSE_CODES,
 			FlashInfoResponse: FlashInfoResponse.RESPONSE_CODES,
+			ChipIdResponse: ChipIdResponse.RESPONSE_CODES
 		}
 		payload = b''
 		if data:
@@ -254,6 +262,24 @@ class FlashInfoResponse(Response):
 
 	def __repr__(self):
 		return f"FlashInfoResponse to 0x{self.header.id:04x}, flash size {self.flash_size_bytes} bytes"
+
+class ChipIdResponse(Response):
+	RESPONSE_CODES = [ 0x0B ]
+
+	@classmethod
+	def validate(self, payload):
+		return len(payload) == 5
+
+	def __init__(self, header, payload):
+		super().__init__(header, payload)
+		self.id1 = payload[0]
+		self.id2 = payload[1]
+		self.id3 = payload[2]
+		self.mem_size = payload[3]
+		self.revision = payload[4]
+
+	def __repr__(self):
+		return f"ChipIdResponse to {self.header.id:04x}, chip id: '{chr(self.id1)}{chr(self.id2)}{chr(self.id3)}'(0x{self.id1:02x}{self.id2:02x}{self.id3:02x}), mem size: 0x{self.mem_size:02x}, revision: 0x{self.revision:02x}"
 
 class LoaderSession():
 	SYNC_BYTE = 0xA5
@@ -407,6 +433,11 @@ class LoaderSession():
 		dispatch = self.send_command(cmd)
 		return self.await_response(dispatch)
 
+	def chip_id(self):
+		cmd = ChipIdCommand()
+		dispatch = self.send_command(cmd)
+		return self.await_response(dispatch)
+
 with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	while True:
 		byts = ser.read(1)
@@ -475,6 +506,8 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	print(session.remote_flash_checksum(0x0, 0x100))
 
 	print(session.flash_info())
+
+	print(session.chip_id())
 
 #	sleep(1)
 	"""
