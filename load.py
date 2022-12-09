@@ -279,7 +279,11 @@ class ChipIdResponse(Response):
 		self.revision = payload[4]
 
 	def __repr__(self):
-		return f"ChipIdResponse to {self.header.id:04x}, chip id: '{chr(self.id1)}{chr(self.id2)}{chr(self.id3)}'(0x{self.id1:02x}{self.id2:02x}{self.id3:02x}), mem size: 0x{self.mem_size:02x}, revision: 0x{self.revision:02x}"
+		revision_major = chr(ord('A') + (self.revision >> 4))
+		revision_minor = chr(ord('A') + (self.revision & 0x0f))
+		return f"ChipIdResponse to {self.header.id:04x}, " + \
+			f"chip id: '{chr(self.id1)}{chr(self.id2)}{chr(self.id3)}'(0x{self.id1:02x}{self.id2:02x}{self.id3:02x}), " + \
+			f"mem size: 0x{self.mem_size:02x}, revision: {revision_major}x{revision_minor}(0x{self.revision:02x})"
 
 class LoaderSession():
 	SYNC_BYTE = 0xA5
