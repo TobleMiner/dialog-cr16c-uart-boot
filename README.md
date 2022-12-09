@@ -1,4 +1,4 @@
-Very messy set of tools for working with the Dialog SC14441 DECT SoC UART bootloader.
+Very messy set of tools for working with the UART bootloader of CR16C based Dialog DECT SoCs.
 
 Flash dumping/writing WiP
 
