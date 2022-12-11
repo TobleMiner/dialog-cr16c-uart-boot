@@ -1,23 +1,88 @@
 #!/usr/bin/env python3
 
+from argparse import ArgumentParser
+import os
 import serial
 import struct
 import sys
 import threading
-from time import sleep
 from zlib import crc32
 
-BOOTLOADER_BAUDRATE = 9600
-STX = 0x02
-SOH = 0x01
-ACK = 0x06
-NACK = 0x15
+class Bootrom():
+	BAUDRATE = 9600
+	STX = 0x02
+	SOH = 0x01
+	ACK = 0x06
+	NACK = 0x15
 
-payload = None
-with open(sys.argv[2], 'rb') as f:
-	payload = f.read()
+	def __init__(self, port, baudrate=BAUDRATE):
+		self.port = port
+		self.baudrate = baudrate
 
-print(f"Will send {len(payload)} bytes to SC14441 bootloader")
+	def __enter__(self):
+		self.serial = serial.Serial(self.port, self.baudrate, timeout=1)
+		return self
+
+	def __exit__(self, *kwargs):
+		self.serial.close()
+
+	def uart_boot(self, payload):
+		print(f"Will send {len(payload)} bytes to SC14441 bootloader")
+		while True:
+			byts = self.serial.read(1)
+			if len(byts) < 1:
+				print("Timed out waiting for STX")
+				continue
+			byt = byts[0]
+			if byt == Bootrom.STX:
+				break
+			else:
+				print(f"Unexpected byte 0x{byt:02x} from bootloader")
+
+		hdr = struct.pack("<BH", Bootrom.SOH, len(payload))
+		self.serial.write(hdr)
+
+		stxcnt = 0
+		while True:
+			byts = self.serial.read(1)
+			if stxcnt > 1 or len(byts) < 1:
+				print("Timed out waiting for response to header")
+				return False
+			byt = byts[0]
+			if byt == Bootrom.STX:
+				stxcnt += 1
+				continue
+			if byt == Bootrom.ACK:
+				break
+			if byt == Bootrom.NACK:
+				print("Bootloader refused our payload")
+				return False
+			else:
+				print(f"Unexpected response 0x{byt:02x} from bootloader")
+				return False
+
+		print("Payload size accepted, sending data")
+		self.serial.write(payload)
+		checksum = 0
+		for byt in payload:
+			checksum ^= byt
+
+		byts = self.serial.read(1)
+		if len(byts) < 1:
+			print("Timed out waiting for response to payload")
+			return False
+		byt = byts[0]
+		if byt == checksum:
+			print("Response checksum correct, starting payload")
+			self.serial.write(struct.pack("<H", Bootrom.ACK))
+			return True
+		else:
+			print("Response checksum incorrect, aborting")
+			return False
+
+	def uart_boot_file(self, file):
+		with open(file, 'rb') as f:
+			return self.uart_boot(f.read())
 
 class Command():
 	def __init__(self, cmd):
@@ -288,12 +353,21 @@ class ChipIdResponse(Response):
 class LoaderSession():
 	SYNC_BYTE = 0xA5
 
-	def __init__(self, serial):
-		self.serial = serial
+	def __init__(self, port, baudrate=Bootrom.BAUDRATE):
+		self.port = port
+		self.baudrate = baudrate
 		self.next_id = 0
 		self.queued_responses = [ ]
 		self.response_available = threading.Condition()
+
+	def __enter__(self):
+		self.serial = serial.Serial(self.port, self.baudrate, timeout=1)
 		self.start()
+		return self
+
+	def __exit__(self, *kwargs):
+		self.stop()
+		self.serial.close()
 
 	def send_command(self, cmd):
 		dispatch = DispatchedCommand(cmd, self.next_id)
@@ -350,7 +424,6 @@ class LoaderSession():
 			self.response_available.release()
 			return resp
 
-		print(f"Timeout: {timeout}s")
 		while self.response_available.wait(timeout):
 			resp = self.find_response(dispatch.id)
 			if resp:
@@ -367,6 +440,19 @@ class LoaderSession():
 	def stop(self):
 		self.exit = True
 		self.listen_thread.join()
+
+	def ping(self):
+		cmd = PingCommand()
+		dispatch = self.send_command(cmd)
+		resp = self.await_response(dispatch)
+		return resp and isinstance(resp, SyncResponse)
+
+	def sync(self, tries=3):
+		for try_ in range(tries):
+			if self.ping():
+				print(f"Synchronized in {try_ + 1} attempts")
+				return True
+		return False
 
 	def read_flash_chunk(self, start, length):
 		cmd = ReadFlashCommand(start, length)
@@ -397,7 +483,7 @@ class LoaderSession():
 
 		return data
 
-	def set_baudrate(self, baudrate, connect_retry=5):
+	def set_baudrate(self, baudrate):
 		cmd = SetBaudrateCommand(baudrate)
 		dispatch = self.send_command(cmd)
 		resp = self.await_response(dispatch)
@@ -407,12 +493,7 @@ class LoaderSession():
 		self.serial.baudrate = baudrate
 		self.queued_responses.clear()
 		self.start()
-		for _ in range(connect_retry):
-			dispatch = self.send_command(PingCommand())
-			if session.await_response(dispatch):
-				return True
-
-		return False
+		return True
 
 	def erase_flash_sector(self, address):
 		cmd = EraseFlashSectorCommand(address)
@@ -442,60 +523,46 @@ class LoaderSession():
 		dispatch = self.send_command(cmd)
 		return self.await_response(dispatch)
 
-with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
-	while True:
-		byts = ser.read(1)
-		if len(byts) < 1:
-			print("Timed out waiting for STX")
-			continue
-		byt = byts[0]
-		if byt == STX:
-			break
-		else:
-			print(f"Unexpected byte 0x{byt:02x} from bootloader")
+def chip_id(session, args):
+	print(session.chip_id())
 
-	hdr = struct.pack("<BH", SOH, len(payload))
-	ser.write(hdr)
+def flash_info(session, args):
+	print(session.flash_info())
 
-	stxcnt = 0
-	while True:
-		byts = ser.read(1)
-		if stxcnt > 1 or len(byts) < 1:
-			print("Timed out waiting for response to header")
-			sys.exit(1)
-		byt = byts[0]
-		if byt == STX:
-			stxcnt += 1
-			continue
-		if byt == ACK:
-			break
-		if byt == NACK:
-			print("Bootloader refused our payload")
-			sys.exit(1)
-		else:
-			print(f"Unexpected response 0x{byt:02x} from bootloader")
-			sys.exit(1)
+CLI_COMMANDS = {
+	"chip_id": chip_id,
+	"flash_info": flash_info
+}
 
-	print("Payload size accepted, sending data")
-	ser.write(payload)
-	checksum = 0
-	for byt in payload:
-		checksum ^= byt
+script_dir = os.path.dirname(os.path.realpath(__file__))
+parser = ArgumentParser(prog="dialogtool.py", description="Dialog UART bootloader tool")
+parser.add_argument("-p", "--port", default="/dev/ttyUSB0")
+parser.add_argument("-b", "--baudrate", type=int, default=230400)
+parser.add_argument("-l", "--loader", default=f"{script_dir}/../device/test.bin")
+parser.add_argument("--skip-loader", action="store_true", help="Skip loader upload")
+parser.add_argument("--initial-baudrate", type=int, default=Bootrom.BAUDRATE, help="Set baudrate used for intial communication")
+parser.add_argument("command", choices=CLI_COMMANDS.keys())
+args = parser.parse_args()
 
-	byts = ser.read(1)
-	if len(byts) < 1:
-		print("Timed out waiting for response to payload")
-		sys.exit(1)
-	byt = byts[0]
-	if byt == checksum:
-		print("Response checksum correct, starting payload")
-		ser.write(struct.pack("<H", ACK))
-	else:
-		print("Response checksum incorrect, aborting")
+if not args.skip_loader:
+	with Bootrom(args.port, args.initial_baudrate) as bootrom:
+		bootrom.uart_boot_file(args.loader)
+
+with LoaderSession(args.port, args.initial_baudrate) as session:
+	if not session.sync():
+		print(f"Failed to synchronize with loader")
 		sys.exit(1)
 
-	session = LoaderSession(ser)
-#	session.attach()
+	if session.baudrate != args.baudrate:
+		print(f"Changing baudrate {session.baudrate} -> {args.baudrate}")
+		session.set_baudrate(args.baudrate)
+		if not session.sync():
+			print(f"Failed to synchronize with loader after baudrate change")
+			sys.exit(1)
+
+	CLI_COMMANDS[args.command](session, args)
+
+	"""
 	dispatch = session.send_command(PingCommand())
 	print(session.await_response(dispatch))
 
@@ -505,7 +572,7 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	dispatch = session.send_command(PingCommand())
 	print(session.await_response(dispatch))
 
-	print(session.set_baudrate(115200 * 2))
+	print(session.set_baudrate(args.baudrate))
 
 	print(session.remote_flash_checksum(0x0, 0x100))
 
@@ -513,8 +580,6 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 
 	print(session.chip_id())
 
-#	sleep(1)
-	"""
 	print("Reading sector 0 before erase...")
 	flash_data = session.read_flash(0x0, 0x1000)
 	print("Sector 0 before erase:")
@@ -533,7 +598,4 @@ with serial.Serial(sys.argv[1], BOOTLOADER_BAUDRATE, timeout=1) as ser:
 	print("Sector 0 after programming:")
 	print(flash_data)
 	"""
-	sleep(5)
-
-	session.stop()
 
