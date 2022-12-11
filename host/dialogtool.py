@@ -523,15 +523,118 @@ class LoaderSession():
 		dispatch = self.send_command(cmd)
 		return self.await_response(dispatch)
 
-def chip_id(session, args):
-	print(session.chip_id())
+def int_autobase(x):
+	return int(x, 0)
 
-def flash_info(session, args):
-	print(session.flash_info())
+class CliCommand():
+	def __init__(self):
+		self.args = None
+
+	def parse_args(self, parser):
+		return True
+
+	def execute(self, session):
+		raise NotImplementedError()
+
+class CliCommandChipId(CliCommand):
+	def __init__(self):
+		super().__init__()
+
+	def execute(self, session):
+		print(session.chip_id())
+
+
+class CliCommandFlashInfo(CliCommand):
+	def __init__(self):
+		super().__init__()
+
+	def execute(self, session):
+		print(session.flash_info())
+
+class CliCommandReadFlash(CliCommand):
+	def __init__(self):
+		super().__init__()
+
+	def parse_args(self, parser):
+		parser.add_argument("filename")
+		parser.add_argument("offset", type=int_autobase, nargs="?")
+		parser.add_argument("length", type=int_autobase, nargs="?")
+		self.args = parser.parse_args()
+		return True
+
+	def execute(self, session):
+		offset = self.args.offset
+		if offset is None:
+			offset = 0
+		length = self.args.length
+		if length is None:
+			flash_info = session.flash_info()
+			if not flash_info or not isinstance(flash_info, FlashInfoResponse):
+				print("Failed to determine flash size, must specify read length manually")
+				return
+			length = flash_info.flash_size_bytes
+		print(f"Will read {length} bytes from 0x{offset:08x} - 0x{offset + length - 1:08x}")
+		with open(self.args.filename, 'wb') as f:
+			f.write(session.read_flash(offset, length))
+
+class CliCommandWriteFlash(CliCommand):
+	def __init__(self):
+		super().__init__()
+		self.offset = None
+		self.length = None
+
+	def parse_args(self, parser):
+		parser.add_argument("filename")
+		parser.add_argument("offset", type=int_autobase, nargs="?")
+		parser.add_argument("length", type=int_autobase, nargs="?")
+		self.args = parser.parse_args()
+
+		offset = self.args.offset
+		if offset is None:
+			offset = 0
+
+		if offset % 0x1000:
+			print("Unaligned flash writes not supported, offset must be aligned with 4096 byte sectors")
+			return False
+		self.offset = offset
+
+		length = self.args.length
+		if length is None:
+			length = os.path.getsize(self.args.filename)
+		if (offset + length) % 0x1000:
+			print("Unaligned flash writes not supported, (offset + size) must be aligned with 4096 byte sectors")
+			return False
+		self.length = length
+
+		return True
+
+
+	def execute(self, session):
+		flash_data = None
+		with open(self.args.filename, 'rb') as f:
+			flash_data = f.read()
+
+		if len(flash_data) < self.offset + self.length:
+			print(f"Failed to write to flash, input file shorter than (offset + length)")
+			return False
+
+		for sector_address in range(self.offset, self.offset + self.length, 0x1000):
+			if not session.erase_flash_sector(sector_address):
+				print(f"Failed to erase sector @0x{sector_address:08x}")
+				return False
+
+		for page_address in range(self.offset, self.offset + self.length, 256):
+			if not session.program_flash_page(page_address, flash_data[page_address:page_address + 256]):
+				print(f"Failed to write page @0x{sector_address:08x}")
+				return False
+
+		return True
 
 CLI_COMMANDS = {
-	"chip_id": chip_id,
-	"flash_info": flash_info
+	"chip_id": CliCommandChipId,
+	"flash_info": CliCommandFlashInfo,
+	"read_flash": CliCommandReadFlash,
+	"write_flash": CliCommandWriteFlash,
 }
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -542,7 +645,11 @@ parser.add_argument("-l", "--loader", default=f"{script_dir}/../device/test.bin"
 parser.add_argument("--skip-loader", action="store_true", help="Skip loader upload")
 parser.add_argument("--initial-baudrate", type=int, default=Bootrom.BAUDRATE, help="Set baudrate used for intial communication")
 parser.add_argument("command", choices=CLI_COMMANDS.keys())
-args = parser.parse_args()
+(args, excess_args) = parser.parse_known_args()
+
+cmd = CLI_COMMANDS[args.command]()
+if not cmd.parse_args(parser):
+	sys.exit(1)
 
 if not args.skip_loader:
 	with Bootrom(args.port, args.initial_baudrate) as bootrom:
@@ -560,42 +667,4 @@ with LoaderSession(args.port, args.initial_baudrate) as session:
 			print(f"Failed to synchronize with loader after baudrate change")
 			sys.exit(1)
 
-	CLI_COMMANDS[args.command](session, args)
-
-	"""
-	dispatch = session.send_command(PingCommand())
-	print(session.await_response(dispatch))
-
-	dispatch = session.send_command(PingCommand())
-	print(session.await_response(dispatch))
-
-	dispatch = session.send_command(PingCommand())
-	print(session.await_response(dispatch))
-
-	print(session.set_baudrate(args.baudrate))
-
-	print(session.remote_flash_checksum(0x0, 0x100))
-
-	print(session.flash_info())
-
-	print(session.chip_id())
-
-	print("Reading sector 0 before erase...")
-	flash_data = session.read_flash(0x0, 0x1000)
-	print("Sector 0 before erase:")
-	print(flash_data)
-	print("Erasing sector 0...")
-	print(session.erase_flash_sector(0x0))
-	print("Reading sector 0 after erase...")
-	flash_data = session.read_flash(0x0, 0x1000)
-	print("Sector 0 after erase:")
-	print(flash_data)
-	print("Programming page 0 after erase...")
-	page_data = b''.join([ i.to_bytes(1, byteorder='little') for i in range(256) ])
-	print(session.program_flash_page(0x0, page_data))
-	print("Reading page 0 after programming...")
-	flash_data = session.read_flash(0x0, 0x100)
-	print("Sector 0 after programming:")
-	print(flash_data)
-	"""
-
+	cmd.execute(session)
