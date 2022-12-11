@@ -541,6 +541,11 @@ static void qspic_read_sfdp(jedec_nor_flash_info_t *flash_info) {
 	debug_putint(num_parameter_header);
 	debug_puts(" parameter headers\r\n");
 
+	if (num_parameter_header == 0x100) {
+		debug_puts("Flash does not seem to support SFDP, skipping auto detection\r\n");
+		return;
+	}
+
 	for (unsigned int hdr_idx = 0; hdr_idx < num_parameter_header; hdr_idx++) {
 		uint8_t parameter_header[8];
 
