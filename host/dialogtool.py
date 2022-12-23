@@ -6,6 +6,7 @@ import serial
 import struct
 import sys
 import threading
+from time import sleep
 from zlib import crc32
 
 class Bootrom():
@@ -27,6 +28,12 @@ class Bootrom():
 		self.serial.close()
 
 	def uart_boot(self, payload):
+		self.serial.rts = True
+		self.serial.dtr = False
+		sleep(0.1)
+		self.serial.dtr = True
+		self.serial.rts = False
+
 		print(f"Will send {len(payload)} bytes to SC14441 bootloader")
 		while True:
 			byts = self.serial.read(1)
