@@ -27,6 +27,12 @@ class Bootrom():
 	def __exit__(self, *kwargs):
 		self.serial.close()
 
+	def reset(self):
+		self.serial.rts = True
+		self.serial.dtr = False
+		sleep(0.1)
+		self.serial.rts = False
+
 	def uart_boot(self, payload):
 		self.serial.rts = True
 		self.serial.dtr = False
@@ -537,6 +543,28 @@ class CliCommand():
 	def __init__(self):
 		self.args = None
 
+	def run(self, args, parser):
+		if not self.parse_args(parser):
+			sys.exit(1)
+
+		if not args.skip_loader:
+			with Bootrom(args.port, args.initial_baudrate) as bootrom:
+				bootrom.uart_boot_file(args.loader)
+
+		with LoaderSession(args.port, args.initial_baudrate) as session:
+			if not session.sync():
+				print(f"Failed to synchronize with loader")
+				sys.exit(1)
+
+			if session.baudrate != args.baudrate:
+				print(f"Changing baudrate {session.baudrate} -> {args.baudrate}")
+				session.set_baudrate(args.baudrate)
+				if not session.sync():
+					print(f"Failed to synchronize with loader after baudrate change")
+					sys.exit(1)
+
+			self.execute(session)
+
 	def parse_args(self, parser):
 		return True
 
@@ -637,11 +665,17 @@ class CliCommandWriteFlash(CliCommand):
 
 		return True
 
+class CliCommandReset(CliCommand):
+	def run(self, args, parser):
+		with Bootrom(args.port) as bootrom:
+			bootrom.reset()
+
 CLI_COMMANDS = {
 	"chip_id": CliCommandChipId,
 	"flash_info": CliCommandFlashInfo,
 	"read_flash": CliCommandReadFlash,
 	"write_flash": CliCommandWriteFlash,
+	"reset": CliCommandReset,
 }
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -655,23 +689,4 @@ parser.add_argument("command", choices=CLI_COMMANDS.keys())
 (args, excess_args) = parser.parse_known_args()
 
 cmd = CLI_COMMANDS[args.command]()
-if not cmd.parse_args(parser):
-	sys.exit(1)
-
-if not args.skip_loader:
-	with Bootrom(args.port, args.initial_baudrate) as bootrom:
-		bootrom.uart_boot_file(args.loader)
-
-with LoaderSession(args.port, args.initial_baudrate) as session:
-	if not session.sync():
-		print(f"Failed to synchronize with loader")
-		sys.exit(1)
-
-	if session.baudrate != args.baudrate:
-		print(f"Changing baudrate {session.baudrate} -> {args.baudrate}")
-		session.set_baudrate(args.baudrate)
-		if not session.sync():
-			print(f"Failed to synchronize with loader after baudrate change")
-			sys.exit(1)
-
-	cmd.execute(session)
+cmd.run(args, parser)
