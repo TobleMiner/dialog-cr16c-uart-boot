@@ -881,6 +881,9 @@ int main(void) {
 
 	reset_uart_rx_dma();
 
+    // empty debug to avoid first actual debug out being consumed by python frontend lol
+    debug_puts("");
+
 /*
 	uint8_t data[] = { 0xff, 0x42 };
 	uint32_t crc32 = crc32_init();
@@ -914,7 +917,16 @@ int main(void) {
 //	P0_DIR_REG |= 0x0c;
 //	P0_DATA_REG &= ~0x02;
 
-	qspi_init();
+    chipid_t chip_id;
+    chipid_read(&chip_id);
+    bool has_qspi = true;
+    if (chip_id.id1 == '4' && chip_id.id2 == '8' && chip_id.id3 == '1') {
+        has_qspi = false;
+    }
+
+    if (has_qspi) {
+        qspi_init();
+    }
 
 /*
 	uint8_t tx_data[256];
@@ -938,10 +950,12 @@ int main(void) {
 	asm("excp svc");
 	debug_puts("SVC call returned\r\n");
 
-	qspic_read_sfdp(&flash_info_g);
-	debug_puts("Flash size ");
-	debug_putlong(flash_info_g.size_bytes);
-	debug_puts(" bytes\r\n");
+    if (has_qspi) {
+        qspic_read_sfdp(&flash_info_g);
+        debug_puts("Flash size ");
+        debug_putlong(flash_info_g.size_bytes);
+        debug_puts(" bytes\r\n");
+    }
 /*
 	QSPIC_CTRLBUS_REG = 0x09;
 	QSPIC_CTRLMODE_REG = 0x3c;
