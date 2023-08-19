@@ -8,6 +8,10 @@ import sys
 import threading
 from time import sleep
 from zlib import crc32
+from hexdump import hexdump
+
+RAW_DEBUG = False
+DO_HEXDUMP = False
 
 class Bootrom():
 	BAUDRATE = 9600
@@ -33,6 +37,34 @@ class Bootrom():
 		sleep(0.1)
 		self.serial.rts = False
 
+	def read(self, count):
+		data = self.serial.read(count)
+		red = "\x1b[31;20m"
+		green = "\x1b[32;20m"
+		reset = "\x1b[0m"
+
+		if RAW_DEBUG:
+			print(f"{green}[Bootrom] RX:\n")
+			if DO_HEXDUMP:
+				hexdump(data)
+			else:
+				print((data))
+			print(f"\n{reset}")
+		return data
+
+	def write(self, data):
+		red = "\x1b[31;20m"
+		green = "\x1b[32;20m"
+		reset = "\x1b[0m"
+		if RAW_DEBUG:
+			print(f"{red}[Bootrom] TX:\n")
+			if DO_HEXDUMP:
+				hexdump(data)
+			else:
+				print((data))
+			print(f"\n{reset}")
+		return self.serial.write(data)
+
 	def uart_boot(self, payload):
 		self.serial.rts = True
 		self.serial.dtr = False
@@ -42,7 +74,7 @@ class Bootrom():
 
 		print(f"Will send {len(payload)} bytes to SC14441 bootloader")
 		while True:
-			byts = self.serial.read(1)
+			byts = self.read(1)
 			if len(byts) < 1:
 				print("Timed out waiting for STX")
 				continue
@@ -53,11 +85,11 @@ class Bootrom():
 				print(f"Unexpected byte 0x{byt:02x} from bootloader")
 
 		hdr = struct.pack("<BH", Bootrom.SOH, len(payload))
-		self.serial.write(hdr)
+		self.write(hdr)
 
 		stxcnt = 0
 		while True:
-			byts = self.serial.read(1)
+			byts = self.read(1)
 			if stxcnt > 1 or len(byts) < 1:
 				print("Timed out waiting for response to header")
 				return False
@@ -75,19 +107,19 @@ class Bootrom():
 				return False
 
 		print("Payload size accepted, sending data")
-		self.serial.write(payload)
+		self.write(payload)
 		checksum = 0
 		for byt in payload:
 			checksum ^= byt
 
-		byts = self.serial.read(1)
+		byts = self.read(1)
 		if len(byts) < 1:
 			print("Timed out waiting for response to payload")
 			return False
 		byt = byts[0]
 		if byt == checksum:
 			print("Response checksum correct, starting payload")
-			self.serial.write(struct.pack("<H", Bootrom.ACK))
+			self.write(struct.pack("<H", Bootrom.ACK))
 			return True
 		else:
 			print("Response checksum incorrect, aborting")
@@ -326,7 +358,6 @@ class DebugResponse(Response):
 
 	def handle(self):
 		print(''.join(chr(b) for b in self.payload), end='')
-#		print('DEBUG: ' + ''.join(chr(b) for b in self.payload))
 		return True
 
 class ChecksumResponse(Response):
@@ -398,11 +429,39 @@ class LoaderSession():
 		self.stop()
 		self.serial.close()
 
+	def read(self, count):
+		data = self.serial.read(count)
+		red = "\x1b[31;20m"
+		green = "\x1b[32;20m"
+		reset = "\x1b[0m"
+
+		if RAW_DEBUG:
+			print(f"{green}[loader] RX:\n")
+			if DO_HEXDUMP:
+				hexdump(data)
+			else:
+				print((data))
+			print(f"\n{reset}")
+		return data
+
+	def write(self, data):
+		red = "\x1b[31;20m"
+		green = "\x1b[32;20m"
+		reset = "\x1b[0m"
+		if RAW_DEBUG:
+			print(f"{red}[loader] TX:\n")
+			if DO_HEXDUMP:
+				hexdump(data)
+			else:
+				print((data))
+			print(f"\n{reset}")
+		return self.serial.write(data)
+
 	def send_command(self, cmd):
 		dispatch = DispatchedCommand(cmd, self.next_id)
 		self.next_id += 1
 		print(f"Dispatching command {dispatch}")
-		self.serial.write(dispatch.encode())
+		self.write(dispatch.encode())
 		return dispatch
 
 	def listen(self):
@@ -421,19 +480,19 @@ class LoaderSession():
 			self.response_available.release()
 
 	def receive_packet(self):
-		sync = self.serial.read(1)
+		sync = self.read(1)
 		if len(sync) == 0:
 			return None
 		if sync[0] == LoaderSession.SYNC_BYTE:
 			self.serial.timeout = 1
-			header_data = self.serial.read(ResponseHeader.LENGTH)
+			header_data = self.read(ResponseHeader.LENGTH)
 			header = ResponseHeader.parse(header_data)
 			if not header:
 				return None
 			payload_with_crc = None
 			if header.payload_length:
 				self.serial.timeout = 1 + header.payload_length_with_crc * 10 / self.serial.baudrate
-				payload_with_crc = self.serial.read(header.payload_length_with_crc)
+				payload_with_crc = self.read(header.payload_length_with_crc)
 			return Response.parse(header, payload_with_crc)
 
 	def find_response(self, id):
