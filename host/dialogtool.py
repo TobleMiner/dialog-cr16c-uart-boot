@@ -224,6 +224,22 @@ class ChipIdCommand(Command):
 	def __repr__(self):
 		return f"ChipId()"
 
+class ReadNCommand(Command):
+	def __init__(self, start_address, length):
+		super().__init__(0x09)
+		self.start_address = start_address
+		self.length = length
+
+	def get_payload(self):
+		return struct.pack("<LL", self.start_address, self.length)
+
+	def get_timeout(self, baudrate):
+		base = super().get_timeout(baudrate)
+		return base + 2 * self.length / (baudrate / 10)
+
+	def __repr__(self):
+		return f"ReadFlash(0x{self.start_address:08x}, {self.length})"
+
 class ResponseHeader():
 	LENGTH = 13
 
@@ -496,6 +512,35 @@ class LoaderSession():
 
 		return data
 
+	def read_mem_chunk(self, start, length):
+		cmd = ReadNCommand(start, length)
+		dispatch = self.send_command(cmd)
+		resp = self.await_response(dispatch)
+		if resp and isinstance(resp, SyncResponse):
+			return resp.payload
+		return None
+
+	def read_mem(self, start, length, retry=5, chunk_size=4096):
+		address = start
+		data = b''
+		while length:
+			read_size = length
+			if read_size > chunk_size:
+				read_size = chunk_size
+			for try_ in range(retry):
+				chunk = self.read_mem_chunk(address, read_size)
+				if chunk:
+					data += chunk
+					break
+				print(f"Failed to read chunk at 0x{address:08x}, try {try_ + 1}/{retry}")
+			else:
+				return None
+
+			length -= read_size
+			address += read_size
+
+		return data
+
 	def set_baudrate(self, baudrate):
 		cmd = SetBaudrateCommand(baudrate)
 		dispatch = self.send_command(cmd)
@@ -670,12 +715,33 @@ class CliCommandReset(CliCommand):
 		with Bootrom(args.port) as bootrom:
 			bootrom.reset()
 
+class CliCommandReadMem(CliCommand):
+	def __init__(self):
+		super().__init__()
+
+	def parse_args(self, parser):
+		parser.add_argument("filename")
+		parser.add_argument("offset", type=int_autobase, nargs="?")
+		parser.add_argument("length", type=int_autobase, nargs="?")
+		self.args = parser.parse_args()
+		return True
+
+	def execute(self, session):
+		offset = self.args.offset
+		if offset is None:
+			offset = 0
+		length = self.args.length
+		print(f"Will read {length} bytes from 0x{offset:08x} - 0x{offset + length - 1:08x}")
+		with open(self.args.filename, 'wb') as f:
+			f.write(session.read_mem(offset, length))
+
 CLI_COMMANDS = {
 	"chip_id": CliCommandChipId,
 	"flash_info": CliCommandFlashInfo,
 	"read_flash": CliCommandReadFlash,
 	"write_flash": CliCommandWriteFlash,
 	"reset": CliCommandReset,
+	"read_mem": CliCommandReadMem,
 }
 
 script_dir = os.path.dirname(os.path.realpath(__file__))

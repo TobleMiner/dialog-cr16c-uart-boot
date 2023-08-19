@@ -34,6 +34,7 @@
 #define UART_CMD_READ_FLASH	0x06
 #define UART_CMD_CHECKSUM	0x07
 #define UART_CMD_CHIPID		0x08
+#define UART_CMD_READMEM      0x09
 
 #define RESPONSE_INVALID_CRC	0x00
 #define RESPONSE_CMD_OK		0x01
@@ -824,6 +825,13 @@ static void call_chipid_handler(const cmd_handler_t *handler, uint32_t id, const
 	send_response_with_payload(RESPONSE_CHIPID, id, chipid_buf, sizeof(chipid_buf));
 }
 
+static void call_readn_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+    const uint8_t *param8 = param_data;
+    uint32_t addr = read_le32(&param8[0]);
+    uint32_t len = read_le32(&param8[4]);
+    send_response_with_payload(RESPONSE_OK, id, (void *)addr, len);
+}
+
 static const cmd_handler_t cmd_handlers[] = {
 	[UART_CMD_PING] = {
 		.call = call_ping_handler,
@@ -861,6 +869,10 @@ static const cmd_handler_t cmd_handlers[] = {
 		.call = call_chipid_handler,
 		.min_param_len = 0,
 	},
+    [UART_CMD_READMEM] = {
+        .call = call_readn_handler,
+        .min_param_len = 8,
+    }
 };
 
 static void dispatch_cmd(const cmd_handler_t *handler, uint32_t id, const void *parameter_data, uint32_t parameter_len) {
