@@ -34,6 +34,7 @@
 #define UART_CMD_READ_FLASH	0x06
 #define UART_CMD_CHECKSUM	0x07
 #define UART_CMD_CHIPID		0x08
+#define UART_CMD_READMEM      0x09
 
 #define RESPONSE_INVALID_CRC	0x00
 #define RESPONSE_CMD_OK		0x01
@@ -824,6 +825,13 @@ static void call_chipid_handler(const cmd_handler_t *handler, uint32_t id, const
 	send_response_with_payload(RESPONSE_CHIPID, id, chipid_buf, sizeof(chipid_buf));
 }
 
+static void call_readn_handler(const cmd_handler_t *handler, uint32_t id, const void *param_data, unsigned int param_len) {
+    const uint8_t *param8 = param_data;
+    uint32_t addr = read_le32(&param8[0]);
+    uint32_t len = read_le32(&param8[4]);
+    send_response_with_payload(RESPONSE_OK, id, (void *)addr, len);
+}
+
 static const cmd_handler_t cmd_handlers[] = {
 	[UART_CMD_PING] = {
 		.call = call_ping_handler,
@@ -861,6 +869,10 @@ static const cmd_handler_t cmd_handlers[] = {
 		.call = call_chipid_handler,
 		.min_param_len = 0,
 	},
+    [UART_CMD_READMEM] = {
+        .call = call_readn_handler,
+        .min_param_len = 8,
+    }
 };
 
 static void dispatch_cmd(const cmd_handler_t *handler, uint32_t id, const void *parameter_data, uint32_t parameter_len) {
@@ -880,6 +892,9 @@ int main(void) {
 		DMAX_CTRL_REG_BW_BYTE;
 
 	reset_uart_rx_dma();
+
+    // empty debug to avoid first actual debug out being consumed by python frontend lol
+    debug_puts("");
 
 /*
 	uint8_t data[] = { 0xff, 0x42 };
@@ -914,7 +929,16 @@ int main(void) {
 //	P0_DIR_REG |= 0x0c;
 //	P0_DATA_REG &= ~0x02;
 
-	qspi_init();
+    chipid_t chip_id;
+    chipid_read(&chip_id);
+    bool has_qspi = true;
+    if (chip_id.id1 == '4' && chip_id.id2 == '8' && chip_id.id3 == '1') {
+        has_qspi = false;
+    }
+
+    if (has_qspi) {
+        qspi_init();
+    }
 
 /*
 	uint8_t tx_data[256];
@@ -938,10 +962,12 @@ int main(void) {
 	asm("excp svc");
 	debug_puts("SVC call returned\r\n");
 
-	qspic_read_sfdp(&flash_info_g);
-	debug_puts("Flash size ");
-	debug_putlong(flash_info_g.size_bytes);
-	debug_puts(" bytes\r\n");
+    if (has_qspi) {
+        qspic_read_sfdp(&flash_info_g);
+        debug_puts("Flash size ");
+        debug_putlong(flash_info_g.size_bytes);
+        debug_puts(" bytes\r\n");
+    }
 /*
 	QSPIC_CTRLBUS_REG = 0x09;
 	QSPIC_CTRLMODE_REG = 0x3c;
